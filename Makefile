@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc
+.PHONY: all build test lint fmt check clean bench doc example
 
 all: fmt lint test
 
@@ -56,6 +56,10 @@ doc-open:
 # Clean build artifacts
 clean:
 	cargo clean
+
+# Run the basic example
+example:
+	cargo run --example basic --release
 
 # Run all CI checks locally
 ci: fmt-check clippy test doc bench-check
