@@ -18,10 +18,20 @@ rand_chacha = "0.3"
 rayon = "1.10"
 num-traits = "0.2"
 thiserror = "2.0"
+ndarray-npy = { version = "0.9", optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 approx = "0.5"
+
+[features]
+default = []
+npy = ["ndarray-npy"]
+
+[[bin]]
+name = "compare-kmeans"
+path = "src/bin/compare_kmeans.rs"
+required-features = ["npy"]
 
 [[bench]]
 name = "kmeans_benchmark"

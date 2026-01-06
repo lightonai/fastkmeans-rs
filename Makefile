@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference
 
 all: fmt lint test
 
@@ -68,3 +68,8 @@ ci: fmt-check clippy test doc bench-check
 # Install git hooks
 install-hooks:
 	./scripts/install-hooks.sh
+
+# Compare with Python fastkmeans reference implementation
+compare-reference:
+	cargo build --release --features npy --bin compare-kmeans
+	uv run docs/compare_reference.py

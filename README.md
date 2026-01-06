@@ -1,7 +1,6 @@
-# fastkmeans-rs
+<h1 align="center">fastkmeans-rs</h1>
 
 [![Crates.io](https://img.shields.io/crates/v/fastkmeans-rs.svg)](https://crates.io/crates/fastkmeans-rs)
-[![Documentation](https://docs.rs/fastkmeans-rs/badge.svg)](https://docs.rs/fastkmeans-rs)
 [![CI](https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/crates/l/fastkmeans-rs.svg)](https://github.com/lightonai/fastkmeans-rs/blob/master/LICENSE)
 
