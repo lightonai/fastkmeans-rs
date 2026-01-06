@@ -2,7 +2,6 @@
 
 <p align="center">
   <a href="https://crates.io/crates/fastkmeans-rs"><img src="https://img.shields.io/crates/v/fastkmeans-rs.svg" alt="Crates.io"></a>
-  <a href="https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml"><img src="https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/lightonai/fastkmeans-rs/blob/master/LICENSE"><img src="https://img.shields.io/crates/l/fastkmeans-rs.svg" alt="License"></a>
 </p>
 
@@ -224,6 +223,50 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+<br>
+
+## Contributing
+
+### Setup
+
+1. Clone the repository:
+
+```bash
+git clone https://github.com/lightonai/fastkmeans-rs.git
+cd fastkmeans-rs
+```
+
+2. Install the git hooks:
+
+```bash
+make install-hooks
+```
+
+### Development Commands
+
+| Command                  | Description                                      |
+| ------------------------ | ------------------------------------------------ |
+| `make build`             | Build the project in debug mode                  |
+| `make release`           | Build in release mode                            |
+| `make test`              | Run all tests                                    |
+| `make lint`              | Run clippy and format checks                     |
+| `make fmt`               | Format code                                      |
+| `make doc`               | Build documentation                              |
+| `make bench`             | Run benchmarks                                   |
+| `make example`           | Run the basic example                            |
+| `make ci`                | Run all CI checks locally                        |
+| `make compare-reference` | Compare output with Python fastkmeans (requires [uv](https://docs.astral.sh/uv/)) |
+
+### Running CI Locally
+
+Before submitting a PR, run all checks locally:
+
+```bash
+make ci
+```
+
+This runs formatting checks, clippy, tests, documentation build, and benchmark compilation.
 
 <br>
 
