@@ -325,7 +325,7 @@ mod tests {
 
         // All labels should be valid
         for &label in result.labels.iter() {
-            assert!(label >= 0 && label < 5);
+            assert!((0..5).contains(&label));
         }
     }
 

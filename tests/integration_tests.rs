@@ -155,7 +155,7 @@ fn test_basic_predict() {
 
     // All labels should be in valid range
     for &label in labels.iter() {
-        assert!(label >= 0 && label < 8, "Labels should be in range [0, k)");
+        assert!((0..8).contains(&label), "Labels should be in range [0, k)");
     }
 }
 

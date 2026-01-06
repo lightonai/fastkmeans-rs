@@ -256,7 +256,7 @@ mod tests {
         assert_eq!(labels.len(), 100);
 
         for &label in labels.iter() {
-            assert!(label >= 0 && label < 8);
+            assert!((0..8).contains(&label));
         }
     }
 
