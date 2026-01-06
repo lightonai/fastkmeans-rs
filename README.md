@@ -1,5 +1,10 @@
 # fastkmeans-rs
 
+[![Crates.io](https://img.shields.io/crates/v/fastkmeans-rs.svg)](https://crates.io/crates/fastkmeans-rs)
+[![Documentation](https://docs.rs/fastkmeans-rs/badge.svg)](https://docs.rs/fastkmeans-rs)
+[![CI](https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml)
+[![License](https://img.shields.io/crates/l/fastkmeans-rs.svg)](https://github.com/lightonai/fastkmeans-rs/blob/master/LICENSE)
+
 > **A Rust rewrite of [FastKMeans](https://github.com/AnswerDotAI/fastkmeans) for CPU-based clustering.**
 
 This crate is a straightforward Rust port of the excellent [fastkmeans](https://github.com/AnswerDotAI/fastkmeans) Python library by Answer.AI. It provides the same double-chunking k-means algorithm optimized for large-scale clustering without running out of memory, now with Rust performance and multi-threaded parallelization via `rayon`.
