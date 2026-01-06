@@ -15,7 +15,10 @@ fn main() {
     let n_features = 2;
     let n_clusters = 3;
 
-    println!("Generating {} samples with {} features...", n_samples, n_features);
+    println!(
+        "Generating {} samples with {} features...",
+        n_samples, n_features
+    );
 
     // Create clustered data by generating points around 3 centers
     let mut data = Array2::<f32>::zeros((n_samples, n_features));
@@ -77,7 +80,12 @@ fn main() {
 
     println!("Cluster distribution:");
     for (i, count) in cluster_counts.iter().enumerate() {
-        println!("  Cluster {}: {} samples ({:.1}%)", i, count, (*count as f64 / n_samples as f64) * 100.0);
+        println!(
+            "  Cluster {}: {} samples ({:.1}%)",
+            i,
+            count,
+            (*count as f64 / n_samples as f64) * 100.0
+        );
     }
     println!();
 

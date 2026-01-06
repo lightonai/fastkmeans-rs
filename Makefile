@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt check clean bench doc example
+.PHONY: all build test lint fmt check clean bench doc example install-hooks
 
 all: fmt lint test
 
@@ -64,3 +64,7 @@ example:
 # Run all CI checks locally
 ci: fmt-check clippy test doc bench-check
 	@echo "All CI checks passed!"
+
+# Install git hooks
+install-hooks:
+	./scripts/install-hooks.sh
