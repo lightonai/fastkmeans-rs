@@ -15,7 +15,11 @@ fn generate_clustered_data(
     let mut rng = ChaCha8Rng::seed_from_u64(seed);
 
     // Generate random cluster centers
-    let centers = Array2::random_using((n_clusters, n_features), Uniform::new(-10.0, 10.0), &mut rng);
+    let centers = Array2::random_using(
+        (n_clusters, n_features),
+        Uniform::new(-10.0, 10.0),
+        &mut rng,
+    );
 
     // Generate points around each center
     let samples_per_cluster = n_samples / n_clusters;
@@ -32,7 +36,8 @@ fn generate_clustered_data(
         for i in start_idx..end_idx {
             for j in 0..n_features {
                 // Add Gaussian noise around the center
-                let noise: f32 = Array2::random_using((1, 1), Uniform::new(-0.5, 0.5), &mut rng)[[0, 0]];
+                let noise: f32 =
+                    Array2::random_using((1, 1), Uniform::new(-0.5, 0.5), &mut rng)[[0, 0]];
                 data[[i, j]] = center[j] + noise;
             }
         }
@@ -43,11 +48,7 @@ fn generate_clustered_data(
 
 /// Calculate Normalized Mutual Information (NMI) between true and predicted labels
 /// This is a simplified implementation for testing purposes
-fn calculate_cluster_purity(
-    data: &ArrayView2<f32>,
-    labels: &[i64],
-    n_clusters: usize,
-) -> f32 {
+fn calculate_cluster_purity(data: &ArrayView2<f32>, labels: &[i64], n_clusters: usize) -> f32 {
     // Calculate cluster sizes and verify non-empty clusters
     let mut cluster_counts = vec![0usize; n_clusters];
     for &label in labels {
@@ -115,11 +116,18 @@ fn test_basic_train() {
 
     let result = kmeans.train(&data.view());
     assert!(result.is_ok(), "Training should succeed");
-    assert!(kmeans.centroids().is_some(), "Centroids should be set after training");
+    assert!(
+        kmeans.centroids().is_some(),
+        "Centroids should be set after training"
+    );
 
     let centroids = kmeans.centroids().unwrap();
     assert_eq!(centroids.nrows(), 10, "Should have k centroids");
-    assert_eq!(centroids.ncols(), 128, "Centroids should have correct dimensions");
+    assert_eq!(
+        centroids.ncols(),
+        128,
+        "Centroids should have correct dimensions"
+    );
 }
 
 #[test]
@@ -129,7 +137,10 @@ fn test_basic_fit() {
 
     let result = kmeans.fit(&data.view());
     assert!(result.is_ok(), "Fit should succeed");
-    assert!(kmeans.centroids().is_some(), "Centroids should be set after fit");
+    assert!(
+        kmeans.centroids().is_some(),
+        "Centroids should be set after fit"
+    );
 }
 
 #[test]
@@ -183,7 +194,11 @@ fn test_clustering_quality_synthetic() {
 
     // Check clustering quality
     let purity = calculate_cluster_purity(&data.view(), labels.as_slice().unwrap(), 5);
-    assert!(purity > 0.0, "Clustering should produce non-zero purity: {}", purity);
+    assert!(
+        purity > 0.0,
+        "Clustering should produce non-zero purity: {}",
+        purity
+    );
 }
 
 #[test]
@@ -302,7 +317,10 @@ fn test_different_seeds_produce_different_results() {
             break;
         }
     }
-    assert!(!all_equal, "Different seeds should produce different results");
+    assert!(
+        !all_equal,
+        "Different seeds should produce different results"
+    );
 }
 
 // ============================================================================
@@ -455,8 +473,8 @@ fn test_small_chunk_sizes() {
         tol: 1e-8,
         seed: 42,
         max_points_per_centroid: None,
-        chunk_size_data: 50,        // Very small
-        chunk_size_centroids: 3,    // Very small
+        chunk_size_data: 50,     // Very small
+        chunk_size_centroids: 3, // Very small
         verbose: false,
     };
 
@@ -476,8 +494,8 @@ fn test_large_chunk_sizes() {
         tol: 1e-8,
         seed: 42,
         max_points_per_centroid: None,
-        chunk_size_data: 100_000,       // Larger than data
-        chunk_size_centroids: 100_000,  // Larger than k
+        chunk_size_data: 100_000,      // Larger than data
+        chunk_size_centroids: 100_000, // Larger than k
         verbose: false,
     };
 
@@ -497,12 +515,18 @@ fn test_centroids_getter() {
     let mut kmeans = FastKMeans::new(8, 5);
 
     // Before training
-    assert!(kmeans.centroids().is_none(), "Centroids should be None before training");
+    assert!(
+        kmeans.centroids().is_none(),
+        "Centroids should be None before training"
+    );
 
     // After training
     kmeans.train(&data.view()).unwrap();
     let centroids = kmeans.centroids();
-    assert!(centroids.is_some(), "Centroids should be Some after training");
+    assert!(
+        centroids.is_some(),
+        "Centroids should be Some after training"
+    );
 
     let c = centroids.unwrap();
     assert_eq!(c.nrows(), 5);

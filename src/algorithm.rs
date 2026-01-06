@@ -10,6 +10,7 @@ use rand_chacha::ChaCha8Rng;
 use std::time::Instant;
 
 /// Result of the k-means algorithm
+#[allow(dead_code)]
 pub struct KMeansResult {
     pub centroids: Array2<f32>,
     pub labels: Array1<i64>,
@@ -30,7 +31,9 @@ pub fn kmeans_double_chunked(
 
     // Validate inputs
     if k == 0 {
-        return Err(KMeansError::InvalidK("k must be greater than 0".to_string()));
+        return Err(KMeansError::InvalidK(
+            "k must be greater than 0".to_string(),
+        ));
     }
 
     if n_samples < k {
@@ -44,7 +47,7 @@ pub fn kmeans_double_chunked(
     let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
 
     // Subsample if needed
-    let (data_subset, subset_indices) = subsample_data(data, config, &mut rng)?;
+    let (data_subset, _subset_indices) = subsample_data(data, config, &mut rng)?;
     let n_samples_used = data_subset.nrows();
 
     if config.verbose {
@@ -146,10 +149,7 @@ pub fn kmeans_double_chunked(
             }
 
             if config.verbose {
-                eprintln!(
-                    "  Reinitialized {} empty clusters",
-                    empty_clusters.len()
-                );
+                eprintln!("  Reinitialized {} empty clusters", empty_clusters.len());
             }
         }
 

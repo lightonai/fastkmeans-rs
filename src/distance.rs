@@ -24,6 +24,7 @@ pub fn compute_squared_norms(data: &ArrayView2<f32>) -> Array1<f32> {
 
 /// Compute squared L2 norms for each row of a 2D array (non-parallel version for small arrays)
 #[inline]
+#[allow(dead_code)]
 pub fn compute_squared_norms_serial(data: &ArrayView2<f32>) -> Array1<f32> {
     let n_samples = data.nrows();
     let mut norms = Array1::zeros(n_samples);
@@ -109,6 +110,7 @@ pub fn find_nearest_centroids_chunked(
 }
 
 /// Find the nearest centroid for each data point (serial version for small arrays)
+#[allow(dead_code)]
 pub fn find_nearest_centroids_serial(
     data_chunk: &ArrayView2<f32>,
     data_norms: &ArrayView1<f32>,
@@ -145,7 +147,10 @@ pub fn find_nearest_centroids_serial(
 }
 
 /// Compute centroid shift (sum of L2 norms of centroid movements)
-pub fn compute_centroid_shift(old_centroids: &ArrayView2<f32>, new_centroids: &ArrayView2<f32>) -> f64 {
+pub fn compute_centroid_shift(
+    old_centroids: &ArrayView2<f32>,
+    new_centroids: &ArrayView2<f32>,
+) -> f64 {
     let k = old_centroids.nrows();
 
     let shifts: f64 = (0..k)
@@ -199,7 +204,7 @@ mod tests {
 
         assert_eq!(labels[0], 0); // (0,0) closest to centroid 0
         assert_eq!(labels[1], 1); // (10,10) closest to centroid 1
-        // (5,5) is equidistant, but we take the first one found (0)
+                                  // (5,5) is equidistant, but we take the first one found (0)
     }
 
     #[test]
