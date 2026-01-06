@@ -1,14 +1,20 @@
 <h1 align="center">fastkmeans-rs</h1>
 
-[![Crates.io](https://img.shields.io/crates/v/fastkmeans-rs.svg)](https://crates.io/crates/fastkmeans-rs)
-[![CI](https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml/badge.svg)](https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml)
-[![License](https://img.shields.io/crates/l/fastkmeans-rs.svg)](https://github.com/lightonai/fastkmeans-rs/blob/master/LICENSE)
+<p align="center">
+  <a href="https://crates.io/crates/fastkmeans-rs"><img src="https://img.shields.io/crates/v/fastkmeans-rs.svg" alt="Crates.io"></a>
+  <a href="https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml"><img src="https://github.com/lightonai/fastkmeans-rs/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/lightonai/fastkmeans-rs/blob/master/LICENSE"><img src="https://img.shields.io/crates/l/fastkmeans-rs.svg" alt="License"></a>
+</p>
 
-> **A Rust rewrite of [FastKMeans](https://github.com/AnswerDotAI/fastkmeans) for CPU-based clustering.**
+<p align="center">
+  <strong>A Rust rewrite of <a href="https://github.com/AnswerDotAI/fastkmeans">FastKMeans</a> for CPU-based clustering.</strong>
+</p>
+
+<br>
 
 This crate is a straightforward Rust port of the excellent [fastkmeans](https://github.com/AnswerDotAI/fastkmeans) Python library by Answer.AI. It provides the same double-chunking k-means algorithm optimized for large-scale clustering without running out of memory, now with Rust performance and multi-threaded parallelization via `rayon`.
 
----
+<br>
 
 ## Features
 
@@ -18,6 +24,8 @@ This crate is a straightforward Rust port of the excellent [fastkmeans](https://
 - **Familiar API** — Provides both FAISS-style (`train`/`predict`) and scikit-learn-style (`fit`/`fit_predict`) interfaces
 - **Memory efficient** — Constant memory usage regardless of dataset size through chunked processing
 - **Reproducible** — Seeded random number generation for deterministic results
+
+<br>
 
 ## Installation
 
@@ -33,6 +41,8 @@ Or via cargo:
 ```bash
 cargo add fastkmeans-rs
 ```
+
+<br>
 
 ## Quick Start
 
@@ -58,6 +68,8 @@ fn main() {
     println!("Assigned {} points to clusters", labels.len());
 }
 ```
+
+<br>
 
 ## Usage
 
@@ -134,6 +146,8 @@ kmeans.fit(&data.view())?;
 | `chunk_size_centroids`    | 10,240    | Number of centroids processed per chunk       |
 | `verbose`                 | false     | Print iteration progress                      |
 
+<br>
+
 ## Algorithm
 
 This implementation uses the **double-chunking k-means** algorithm from the original FastKMeans:
@@ -158,12 +172,16 @@ This implementation uses the **double-chunking k-means** algorithm from the orig
    - Cluster assignment updates
    - Centroid recomputation
 
+<br>
+
 ## Performance Tips
 
 - **Adjust chunk sizes** based on your available memory. Larger chunks = faster but more memory
 - **Use subsampling** (`max_points_per_centroid`) for very large datasets during initial exploration
 - **Set `verbose: true`** to monitor convergence and iteration times
 - **Compile with `--release`** for optimal performance (10-100x faster than debug builds)
+
+<br>
 
 ## Example: Large-Scale Clustering
 
@@ -207,9 +225,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+<br>
+
 ## Acknowledgements
 
 This crate is a Rust port of [FastKMeans](https://github.com/AnswerDotAI/fastkmeans) by Answer.AI. All credit for the algorithm design and optimization strategies goes to the original authors.
+
+<br>
 
 ## License
 
