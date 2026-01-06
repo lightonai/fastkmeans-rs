@@ -19,6 +19,7 @@ This crate is a straightforward Rust port of the excellent [fastkmeans](https://
 
 - **Double-chunking algorithm** — Processes both data points and centroids in configurable chunks to avoid OOM issues on large datasets
 - **Multi-threaded** — Leverages `rayon` for parallel computation across all CPU cores
+- **Optional BLAS acceleration** — Enable `accelerate` (macOS) or `openblas` features for optimized matrix operations
 - **ndarray compatible** — Seamlessly integrates with the Rust scientific computing ecosystem
 - **Familiar API** — Provides both FAISS-style (`train`/`predict`) and scikit-learn-style (`fit`/`fit_predict`) interfaces
 - **Memory efficient** — Constant memory usage regardless of dataset size through chunked processing
@@ -40,6 +41,62 @@ Or via cargo:
 ```bash
 cargo add fastkmeans-rs
 ```
+
+### With BLAS Acceleration (Recommended)
+
+For optimal performance, enable a BLAS backend:
+
+```toml
+# macOS (recommended - uses Apple Accelerate framework)
+fastkmeans-rs = { version = "0.1", features = ["accelerate"] }
+
+# Linux/Windows (requires OpenBLAS installed)
+fastkmeans-rs = { version = "0.1", features = ["openblas"] }
+```
+
+<br>
+
+## Benchmarks
+
+### Accuracy Validation
+
+fastkmeans-rs produces clustering results equivalent to the reference Python [fastkmeans](https://github.com/AnswerDotAI/fastkmeans) implementation. We validate this by comparing inertia (sum of squared distances to assigned centroids):
+
+| Samples | Features | k | Python Inertia | Rust Inertia | Difference |
+|---------|----------|---|----------------|--------------|------------|
+| 1,000 | 64 | 10 | 59,630.96 | 59,816.55 | 0.31% |
+| 500 | 32 | 5 | 14,693.69 | 14,588.72 | 0.71% |
+| 2,000 | 128 | 20 | 242,046.80 | 242,268.88 | 0.09% |
+
+The small differences (<1%) are expected since k-means converges to local minima based on random initialization.
+
+Run the accuracy benchmark yourself:
+
+```bash
+uv run benches/compare_reference.py
+```
+
+### Performance Comparison
+
+Benchmark comparing fastkmeans-rs (with BLAS) against Python fastkmeans (using PyTorch) on an Apple M3 Max:
+
+| Config | Samples | Dims | k | Python | Rust | Speedup |
+|--------|---------|------|---|--------|------|---------|
+| Small | 1,000 | 64 | 10 | 0.006s | 0.003s | **2.16x** |
+| Medium | 5,000 | 64 | 50 | 0.016s | 0.015s | **1.06x** |
+| Large | 10,000 | 128 | 100 | 0.044s | 0.041s | **1.07x** |
+| XL | 25,000 | 128 | 100 | 0.098s | 0.083s | **1.18x** |
+| XXL | 50,000 | 128 | 256 | 0.315s | 0.293s | **1.08x** |
+
+**Average speedup: 1.31x** (with BLAS enabled)
+
+Run the performance benchmark yourself:
+
+```bash
+uv run benches/benchmark_comparison.py
+```
+
+> **Note:** Without BLAS, Rust performance is slower than Python on large datasets. Enable `accelerate` or `openblas` features for optimal performance.
 
 <br>
 
@@ -245,18 +302,21 @@ make install-hooks
 
 ### Development Commands
 
-| Command                  | Description                                      |
-| ------------------------ | ------------------------------------------------ |
-| `make build`             | Build the project in debug mode                  |
-| `make release`           | Build in release mode                            |
-| `make test`              | Run all tests                                    |
-| `make lint`              | Run clippy and format checks                     |
-| `make fmt`               | Format code                                      |
-| `make doc`               | Build documentation                              |
-| `make bench`             | Run benchmarks                                   |
-| `make example`           | Run the basic example                            |
-| `make ci`                | Run all CI checks locally                        |
-| `make compare-reference` | Compare output with Python fastkmeans (requires [uv](https://docs.astral.sh/uv/)) |
+| Command                  | Description                                                                       |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `make build`             | Build the project in debug mode                                                   |
+| `make release`           | Build in release mode                                                             |
+| `make test`              | Run all tests                                                                     |
+| `make lint`              | Run clippy and format checks                                                      |
+| `make fmt`               | Format code                                                                       |
+| `make doc`               | Build documentation                                                               |
+| `make bench`             | Run benchmarks                                                                    |
+| `make example`              | Run the basic example                                                             |
+| `make ci`                   | Run all CI checks locally                                                         |
+| `make build-blas`           | Build with BLAS acceleration (auto-detects platform)                              |
+| `make test-blas`            | Run tests with BLAS acceleration                                                  |
+| `make compare-reference`    | Compare output with Python fastkmeans (requires [uv](https://docs.astral.sh/uv/)) |
+| `make benchmark-comparison` | Run performance comparison vs Python fastkmeans                                   |
 
 ### Running CI Locally
 

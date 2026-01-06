@@ -17,7 +17,7 @@ Since k-means converges to different local minima based on initialization, we co
 2. Cluster distribution - should produce reasonable cluster sizes
 
 Usage:
-    uv run docs/compare_reference.py [--n-samples N] [--n-features D] [--k K] [--seed S]
+    uv run benches/compare_reference.py [--n-samples N] [--n-features D] [--k K] [--seed S]
 """
 
 import argparse

@@ -20,6 +20,11 @@ num-traits = "0.2"
 thiserror = "2.0"
 ndarray-npy = { version = "0.9", optional = true }
 
+# BLAS backends (optional)
+blas-src = { version = "0.10", optional = true }
+openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+accelerate-src = { version = "0.3", optional = true }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 approx = "0.5"
@@ -27,6 +32,12 @@ approx = "0.5"
 [features]
 default = []
 npy = ["ndarray-npy"]
+
+# BLAS acceleration features
+# Use system OpenBLAS (requires libopenblas-dev on Linux, brew install openblas on macOS)
+openblas = ["blas-src", "openblas-src", "ndarray/blas"]
+# Use Apple Accelerate framework (macOS only, recommended for macOS)
+accelerate = ["blas-src", "accelerate-src", "ndarray/blas"]
 
 [[bin]]
 name = "compare-kmeans"

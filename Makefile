@@ -1,4 +1,12 @@
-.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference
+.PHONY: all build test lint fmt check clean bench doc example install-hooks compare-reference benchmark-comparison
+
+# Auto-detect BLAS feature based on OS
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+    BLAS_FEATURE := accelerate
+else
+    BLAS_FEATURE := openblas
+endif
 
 all: fmt lint test
 
@@ -71,5 +79,18 @@ install-hooks:
 
 # Compare with Python fastkmeans reference implementation
 compare-reference:
-	cargo build --release --features npy --bin compare-kmeans
-	uv run docs/compare_reference.py
+	cargo build --release --features "npy,$(BLAS_FEATURE)" --bin compare-kmeans
+	uv run benches/compare_reference.py
+
+# Run performance benchmark comparison
+benchmark-comparison:
+	cargo build --release --features "npy,$(BLAS_FEATURE)" --bin compare-kmeans
+	uv run benches/benchmark_comparison.py
+
+# Build with BLAS acceleration
+build-blas:
+	cargo build --release --features $(BLAS_FEATURE)
+
+# Test with BLAS acceleration
+test-blas:
+	cargo test --features $(BLAS_FEATURE)

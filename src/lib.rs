@@ -10,6 +10,7 @@
 //! - **Parallel computation**: Uses rayon for multi-threaded processing
 //! - **ndarray compatible**: Works seamlessly with ndarray arrays
 //! - **FAISS/scikit-learn compatible API**: Familiar `train()`, `fit()`, `predict()` interface
+//! - **Optional BLAS acceleration**: Enable `accelerate` (macOS) or `openblas` features for faster matrix operations
 //!
 //! ## Example
 //!
@@ -55,6 +56,25 @@
 //! let mut kmeans = FastKMeans::with_config(config);
 //! let labels = kmeans.fit_predict(&data.view()).unwrap();
 //! ```
+//!
+//! ## BLAS Acceleration
+//!
+//! For improved performance on large datasets, enable a BLAS backend:
+//!
+//! ```toml
+//! # macOS (recommended - uses Apple Accelerate)
+//! fastkmeans-rs = { version = "0.1", features = ["accelerate"] }
+//!
+//! # Linux/Windows (requires OpenBLAS installed)
+//! fastkmeans-rs = { version = "0.1", features = ["openblas"] }
+//! ```
+
+// Link BLAS libraries when features are enabled
+#[cfg(feature = "accelerate")]
+extern crate accelerate_src;
+
+#[cfg(feature = "openblas")]
+extern crate openblas_src;
 
 mod algorithm;
 mod config;

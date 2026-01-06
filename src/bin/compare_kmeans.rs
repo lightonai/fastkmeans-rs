@@ -11,6 +11,7 @@ use ndarray_npy::{ReadNpyExt, WriteNpyExt};
 use std::env;
 use std::fs::File;
 use std::io::BufReader;
+use std::time::Instant;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -59,7 +60,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let mut kmeans = FastKMeans::with_config(config);
+
+    let start = Instant::now();
     kmeans.train(&data.view())?;
+    let train_time = start.elapsed();
+
+    // Output training time in a parseable format
+    println!("TRAIN_TIME_MS:{}", train_time.as_secs_f64() * 1000.0);
 
     // Get centroids and save
     let centroids = kmeans.centroids().ok_or("No centroids after training")?;
