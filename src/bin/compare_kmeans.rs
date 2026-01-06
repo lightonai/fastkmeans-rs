@@ -3,7 +3,7 @@
 //! This binary reads input data from a .npy file, runs k-means clustering,
 //! and saves the resulting centroids to another .npy file for comparison.
 //!
-//! Usage: compare-kmeans <input.npy> <output.npy> <k> <seed> <max_iters> <tol>
+//! Usage: `compare-kmeans <input.npy> <output.npy> <k> <seed> <max_iters> <tol>`
 
 use fastkmeans_rs::{FastKMeans, KMeansConfig};
 use ndarray::Array2;

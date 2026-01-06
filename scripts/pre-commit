@@ -11,17 +11,17 @@ echo "Running pre-commit checks..."
 echo "Checking formatting..."
 cargo fmt --all -- --check
 
-# Run clippy (lib only to ignore untracked bin files)
+# Run clippy
 echo "Running clippy..."
-cargo clippy --lib --tests --all-features -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 
 # Run tests
 echo "Running tests..."
 cargo test
 
-# Build documentation (lib only to ignore untracked bin files)
+# Build documentation
 echo "Building documentation..."
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --lib --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
 
 # Compile benchmarks (without running)
 echo "Checking benchmarks compile..."
