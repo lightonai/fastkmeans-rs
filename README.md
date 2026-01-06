@@ -26,7 +26,7 @@ Add `fastkmeans-rs` to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-fastkmeans-rs = "0.1"
+fastkmeans-rs = "0.1.3"
 ```
 
 Or via cargo:
