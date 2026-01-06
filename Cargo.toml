@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2021"
 description = "A fast and efficient k-means clustering implementation in Rust, compatible with ndarray"
 license = "Apache-2.0"
+repository = "https://github.com/lightonai/fastkmeans-rs"
+homepage = "https://github.com/lightonai/fastkmeans-rs"
+documentation = "https://docs.rs/fastkmeans-rs"
 keywords = ["kmeans", "clustering", "machine-learning", "ndarray"]
 categories = ["science", "algorithms"]
 
