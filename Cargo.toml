@@ -22,7 +22,10 @@ ndarray-npy = { version = "0.9", optional = true }
 
 # BLAS backends (optional)
 blas-src = { version = "0.10", optional = true }
-openblas-src = { version = "0.10", features = ["cblas", "system"], optional = true }
+openblas-src = { version = "0.10", features = [
+    "cblas",
+    "system",
+], optional = true }
 accelerate-src = { version = "0.3", optional = true }
 
 [dev-dependencies]
