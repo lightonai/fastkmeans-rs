@@ -74,7 +74,7 @@ pub fn find_nearest_centroids_chunked(
         // dist_chunk has shape (n_data, chunk_centroids)
         let n_centroids_chunk = c_end - c_start;
 
-        // Compute x.c using matrix multiplication
+        // Compute x.c using matrix multiplication (BLAS accelerated)
         // data_chunk: (n_data, n_features), centroid_chunk.t(): (n_features, n_centroids_chunk)
         // Result: (n_data, n_centroids_chunk)
         let dot_products = data_chunk.dot(&centroid_chunk.t());
@@ -88,10 +88,11 @@ pub fn find_nearest_centroids_chunked(
             .enumerate()
             .for_each(|(i, (label, best_dist))| {
                 let x_norm = data_norms[i];
+                let dot_row = dot_products.row(i);
 
                 for j in 0..n_centroids_chunk {
                     let c_norm = centroid_chunk_norms[j];
-                    let dot = dot_products[[i, j]];
+                    let dot = dot_row[j];
 
                     // Squared distance: ||x||^2 + ||c||^2 - 2*x.c
                     let dist = x_norm + c_norm - 2.0 * dot;

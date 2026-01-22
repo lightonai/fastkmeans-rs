@@ -7,6 +7,7 @@ use ndarray::{Array1, Array2, ArrayView2};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+use rayon::prelude::*;
 use std::time::Instant;
 
 /// Result of the k-means algorithm
@@ -81,53 +82,67 @@ pub fn kmeans_double_chunked(
         // Pre-compute centroid norms
         let centroid_norms = compute_squared_norms(&centroids.view());
 
-        // Accumulators for new centroids
+        // Build chunk ranges for parallel processing
+        let chunk_ranges: Vec<(usize, usize)> = (0..n_samples_used)
+            .step_by(config.chunk_size_data)
+            .map(|start| (start, (start + config.chunk_size_data).min(n_samples_used)))
+            .collect();
+
+        // Process all chunks in parallel
+        #[allow(clippy::type_complexity)]
+        let chunk_results: Vec<(Array2<f32>, Array1<f32>, Vec<(usize, i64)>)> = chunk_ranges
+            .par_iter()
+            .map(|&(start_idx, end_idx)| {
+                let data_chunk = data_subset.slice(ndarray::s![start_idx..end_idx, ..]);
+                let data_chunk_norms = data_norms.slice(ndarray::s![start_idx..end_idx]);
+
+                let chunk_labels = find_nearest_centroids_chunked(
+                    &data_chunk,
+                    &data_chunk_norms,
+                    &centroids.view(),
+                    &centroid_norms.view(),
+                    config.chunk_size_centroids,
+                );
+
+                let mut local_sums: Array2<f32> = Array2::zeros((k, n_features));
+                let mut local_counts: Array1<f32> = Array1::zeros(k);
+                let mut label_pairs: Vec<(usize, i64)> = Vec::with_capacity(end_idx - start_idx);
+
+                for (i, &label) in chunk_labels.iter().enumerate() {
+                    let cluster_idx = label as usize;
+                    local_counts[cluster_idx] += 1.0;
+                    local_sums
+                        .row_mut(cluster_idx)
+                        .scaled_add(1.0, &data_chunk.row(i));
+                    label_pairs.push((start_idx + i, label));
+                }
+
+                (local_sums, local_counts, label_pairs)
+            })
+            .collect();
+
+        // Reduce: merge all chunk results
         let mut cluster_sums: Array2<f32> = Array2::zeros((k, n_features));
         let mut cluster_counts: Array1<f32> = Array1::zeros(k);
 
-        // Process data in chunks
-        let mut start_idx = 0;
-        while start_idx < n_samples_used {
-            let end_idx = (start_idx + config.chunk_size_data).min(n_samples_used);
-            let data_chunk = data_subset.slice(ndarray::s![start_idx..end_idx, ..]);
-            let data_chunk_norms = data_norms.slice(ndarray::s![start_idx..end_idx]);
-
-            // Find nearest centroids for this chunk
-            let chunk_labels = find_nearest_centroids_chunked(
-                &data_chunk,
-                &data_chunk_norms,
-                &centroids.view(),
-                &centroid_norms.view(),
-                config.chunk_size_centroids,
-            );
-
-            // Update labels
-            for (i, &label) in chunk_labels.iter().enumerate() {
-                labels[start_idx + i] = label;
+        for (local_sums, local_counts, label_pairs) in chunk_results {
+            cluster_sums += &local_sums;
+            cluster_counts += &local_counts;
+            for (idx, label) in label_pairs {
+                labels[idx] = label;
             }
-
-            // Accumulate cluster sums and counts
-            for (i, &label) in chunk_labels.iter().enumerate() {
-                let cluster_idx = label as usize;
-                cluster_counts[cluster_idx] += 1.0;
-                for j in 0..n_features {
-                    cluster_sums[[cluster_idx, j]] += data_chunk[[i, j]];
-                }
-            }
-
-            start_idx = end_idx;
         }
 
-        // Compute new centroids
+        // Compute new centroids using vectorized operations
         let prev_centroids = centroids.clone();
         let mut empty_clusters = Vec::new();
 
         for cluster_idx in 0..k {
             let count = cluster_counts[cluster_idx];
             if count > 0.0 {
-                for j in 0..n_features {
-                    centroids[[cluster_idx, j]] = cluster_sums[[cluster_idx, j]] / count;
-                }
+                let mut centroid_row = centroids.row_mut(cluster_idx);
+                let sum_row = cluster_sums.row(cluster_idx);
+                centroid_row.assign(&(&sum_row / count));
             } else {
                 empty_clusters.push(cluster_idx);
             }
@@ -143,9 +158,9 @@ pub fn kmeans_double_chunked(
 
             for (i, &cluster_idx) in empty_clusters.iter().enumerate() {
                 let data_idx = random_indices[i];
-                for j in 0..n_features {
-                    centroids[[cluster_idx, j]] = data_subset[[data_idx, j]];
-                }
+                centroids
+                    .row_mut(cluster_idx)
+                    .assign(&data_subset.row(data_idx));
             }
 
             if config.verbose {
@@ -214,9 +229,7 @@ fn subsample_data(
             let n_features = data.ncols();
             let mut subset = Array2::zeros((max_samples, n_features));
             for (new_idx, &old_idx) in indices.iter().enumerate() {
-                for j in 0..n_features {
-                    subset[[new_idx, j]] = data[[old_idx, j]];
-                }
+                subset.row_mut(new_idx).assign(&data.row(old_idx));
             }
 
             return Ok((subset, Some(indices)));
@@ -237,9 +250,7 @@ fn initialize_centroids(data: &ArrayView2<f32>, k: usize, rng: &mut ChaCha8Rng) 
 
     let mut centroids = Array2::zeros((k, n_features));
     for (centroid_idx, &data_idx) in selected.iter().enumerate() {
-        for j in 0..n_features {
-            centroids[[centroid_idx, j]] = data[[data_idx, j]];
-        }
+        centroids.row_mut(centroid_idx).assign(&data.row(data_idx));
     }
 
     centroids
