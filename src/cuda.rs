@@ -88,29 +88,6 @@ extern "C" __global__ void find_nearest_centroids(
     }
 }
 
-extern "C" __global__ void accumulate_cluster_sums(
-    const float* data,
-    const long long* labels,
-    float* cluster_sums,
-    float* cluster_counts,
-    int n_samples,
-    int n_features,
-    int k
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n_samples) {
-        int cluster_id = (int)labels[idx];
-        if (cluster_id >= 0 && cluster_id < k) {
-            atomicAdd(&cluster_counts[cluster_id], 1.0f);
-            const float* point = data + idx * n_features;
-            float* centroid_sum = cluster_sums + cluster_id * n_features;
-            for (int j = 0; j < n_features; j++) {
-                atomicAdd(&centroid_sum[j], point[j]);
-            }
-        }
-    }
-}
-
 extern "C" __global__ void init_best_dists(
     float* best_dists,
     int n_samples
@@ -118,26 +95,6 @@ extern "C" __global__ void init_best_dists(
     int idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (idx < n_samples) {
         best_dists[idx] = 3.4028235e+38f;  // FLT_MAX
-    }
-}
-
-extern "C" __global__ void init_labels(
-    long long* labels,
-    int n_samples
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n_samples) {
-        labels[idx] = 0;
-    }
-}
-
-extern "C" __global__ void zero_float_array(
-    float* arr,
-    int n
-) {
-    int idx = blockIdx.x * blockDim.x + threadIdx.x;
-    if (idx < n) {
-        arr[idx] = 0.0f;
     }
 }
 "#;
@@ -148,7 +105,8 @@ const MODULE_NAME: &str = "kmeans_kernels";
 ///
 /// This implementation uses double-chunking to process both data and centroids
 /// in manageable chunks, minimizing VRAM and RAM usage while maintaining
-/// high performance through GPU acceleration.
+/// high performance through GPU acceleration with cuBLAS GEMM (uses TF32
+/// Tensor Cores on Ampere+ GPUs).
 pub struct FastKMeansCuda {
     /// Model configuration
     config: KMeansConfig,
@@ -228,15 +186,13 @@ impl FastKMeansCuda {
                 &[
                     "compute_squared_norms",
                     "find_nearest_centroids",
-                    "accumulate_cluster_sums",
                     "init_best_dists",
-                    "init_labels",
-                    "zero_float_array",
                 ],
             )
             .map_err(|e| KMeansError::InvalidK(format!("Failed to load CUDA module: {}", e)))?;
 
         // Create cuBLAS handle
+        // Note: TF32 is enabled by default on Ampere+ GPUs for cuBLAS SGEMM
         let blas = CudaBlas::new(device.clone())
             .map_err(|e| KMeansError::InvalidK(format!("Failed to create cuBLAS handle: {}", e)))?;
 
@@ -330,7 +286,7 @@ impl FastKMeansCuda {
             // Pre-compute centroid norms on CPU
             let centroid_norms = self.compute_squared_norms_cpu(&centroids.view());
 
-            // Process data in chunks (double-chunking: data chunks on host, centroid chunks on GPU)
+            // Process data in chunks
             let chunk_size_data = self.config.chunk_size_data;
             let mut data_start = 0;
 
@@ -366,7 +322,7 @@ impl FastKMeansCuda {
                 // Initialize best distances to infinity
                 self.init_best_dists_gpu(&mut d_best_dists_chunk, chunk_size)?;
 
-                // Find nearest centroids using centroid chunking on GPU
+                // Find nearest centroids using cuBLAS GEMM
                 self.find_nearest_centroids_chunked_gpu(
                     &d_data_chunk,
                     &d_data_norms_chunk,
@@ -390,7 +346,6 @@ impl FastKMeansCuda {
                     labels[data_start + i] = label;
                 }
 
-                // GPU memory for this chunk is automatically freed when d_data_chunk etc. go out of scope
                 data_start = data_end;
             }
 
@@ -513,7 +468,7 @@ impl FastKMeansCuda {
             // Compute data norms for this chunk on GPU
             let d_data_norms_chunk = self.compute_squared_norms_gpu(&d_data_chunk, chunk_size, n_features)?;
 
-            // Download data norms (needed for find_nearest_centroids_chunked_gpu which takes host centroid data)
+            // Download data norms
             let data_norms_chunk: Vec<f32> = self
                 .device
                 .dtoh_sync_copy(&d_data_norms_chunk)
@@ -536,7 +491,7 @@ impl FastKMeansCuda {
             // Initialize
             self.init_best_dists_gpu(&mut d_best_dists_chunk, chunk_size)?;
 
-            // Find nearest centroids using centroid chunking
+            // Find nearest centroids
             self.find_nearest_centroids_chunked_gpu(
                 &d_data_chunk,
                 &d_data_norms_chunk,
@@ -663,10 +618,7 @@ impl FastKMeansCuda {
         Ok(())
     }
 
-    /// Find nearest centroids using centroid chunking on GPU
-    ///
-    /// This method takes host-side centroids and centroid norms, and uploads
-    /// them in chunks to minimize GPU memory usage for the dot product computation.
+    /// Find nearest centroids using centroid chunking on GPU with cuBLAS GEMM
     fn find_nearest_centroids_chunked_gpu(
         &self,
         d_data: &CudaSlice<f32>,
@@ -710,15 +662,7 @@ impl FastKMeansCuda {
                     KMeansError::InvalidK(format!("Failed to allocate dot products: {}", e))
                 })?;
 
-            // Compute dot products using cuBLAS GEMM
-            // We want: result[i,j] = data[i,:] . centroids[j,:]
-            // In row-major terms: result = data @ centroids.T
-            //
-            // cuBLAS uses column-major. For row-major data D (n_samples x n_features) and
-            // centroids C (n_centroids x n_features), we want D @ C.T
-            //
-            // Using gemm: C = alpha * op(A) * op(B) + beta * C
-            // Result will be (n_centroids x n_samples) in column-major = (n_samples x n_centroids) in row-major
+            // Compute dot products using cuBLAS GEMM (uses TF32 Tensor Cores on Ampere+)
             let gemm_cfg = GemmConfig {
                 transa: cublasOperation_t::CUBLAS_OP_T,
                 transb: cublasOperation_t::CUBLAS_OP_N,
@@ -767,7 +711,6 @@ impl FastKMeansCuda {
             }
             .map_err(|e| KMeansError::InvalidK(format!("Failed to launch kernel: {}", e)))?;
 
-            // GPU memory for centroid chunk and dot products freed when they go out of scope
             c_start = c_end;
         }
 
@@ -775,7 +718,6 @@ impl FastKMeansCuda {
     }
 
     /// Accumulate cluster sums and counts on CPU
-    /// This avoids keeping large intermediate GPU buffers
     fn accumulate_clusters_cpu(
         &self,
         data: &ArrayView2<f32>,
@@ -975,11 +917,10 @@ mod tests {
         cpu_kmeans.train(&data.view()).unwrap();
         let cpu_labels = cpu_kmeans.predict(&data.view()).unwrap();
 
-        // Compare results - they should be identical with same seed
+        // Compare results
         let cuda_centroids = cuda_kmeans.centroids().unwrap();
         let cpu_centroids = cpu_kmeans.centroids().unwrap();
 
-        // Check that centroids are close (allowing for minor floating point differences)
         let mut max_diff = 0.0f32;
         for i in 0..cuda_centroids.nrows() {
             for j in 0..cuda_centroids.ncols() {
@@ -990,7 +931,6 @@ mod tests {
             }
         }
 
-        // Allow for some floating point difference due to different computation order
         assert!(
             max_diff < 0.1,
             "CUDA and CPU centroids should be similar (max diff: {})",
@@ -1014,14 +954,13 @@ mod tests {
 
     #[test]
     fn test_cuda_chunked_processing() {
-        // Test with small chunk sizes to verify chunking works correctly
         let data = Array2::random((1000, 32), Uniform::new(-1.0f32, 1.0));
 
         let config = KMeansConfig::new(10)
             .with_seed(42)
             .with_max_iters(5)
-            .with_chunk_size_data(200)  // Small data chunk
-            .with_chunk_size_centroids(3)  // Small centroid chunk
+            .with_chunk_size_data(200)
+            .with_chunk_size_centroids(3)
             .with_max_points_per_centroid(None);
 
         let mut kmeans = FastKMeansCuda::with_config(config).unwrap();
