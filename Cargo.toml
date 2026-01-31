@@ -1,6 +1,6 @@
 [package]
 name = "fastkmeans-rs"
-version = "0.1.6"
+version = "0.1.7"
 edition = "2021"
 description = "A fast and efficient k-means clustering implementation in Rust, compatible with ndarray"
 license = "Apache-2.0"

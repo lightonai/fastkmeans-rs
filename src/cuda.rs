@@ -1,6 +1,9 @@
-//! CUDA-accelerated k-means clustering
+//! CUDA-accelerated k-means clustering with low memory usage
 //!
 //! This module provides GPU-accelerated k-means clustering using CUDA.
+//! It uses double-chunking (chunking both data and centroids) to minimize
+//! VRAM and RAM usage while maintaining high performance.
+//!
 //! Enable the `cuda` feature to use this functionality.
 //!
 //! # Example
@@ -26,7 +29,7 @@ use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{CudaDevice, CudaFunction, CudaSlice, LaunchAsync, LaunchConfig};
 use cudarc::nvrtc::compile_ptx;
-use ndarray::{Array1, Array2, ArrayView2};
+use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
@@ -108,46 +111,6 @@ extern "C" __global__ void accumulate_cluster_sums(
     }
 }
 
-extern "C" __global__ void update_centroids(
-    float* centroids,
-    const float* cluster_sums,
-    const float* cluster_counts,
-    int k,
-    int n_features
-) {
-    int cluster_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (cluster_id < k) {
-        float count = cluster_counts[cluster_id];
-        if (count > 0.0f) {
-            float* centroid = centroids + cluster_id * n_features;
-            const float* sum = cluster_sums + cluster_id * n_features;
-            for (int j = 0; j < n_features; j++) {
-                centroid[j] = sum[j] / count;
-            }
-        }
-    }
-}
-
-extern "C" __global__ void compute_centroid_shift(
-    const float* old_centroids,
-    const float* new_centroids,
-    float* shifts,
-    int k,
-    int n_features
-) {
-    int cluster_id = blockIdx.x * blockDim.x + threadIdx.x;
-    if (cluster_id < k) {
-        const float* old_c = old_centroids + cluster_id * n_features;
-        const float* new_c = new_centroids + cluster_id * n_features;
-        float diff_sq = 0.0f;
-        for (int j = 0; j < n_features; j++) {
-            float d = new_c[j] - old_c[j];
-            diff_sq += d * d;
-        }
-        shifts[cluster_id] = sqrtf(diff_sq);
-    }
-}
-
 extern "C" __global__ void init_best_dists(
     float* best_dists,
     int n_samples
@@ -167,11 +130,25 @@ extern "C" __global__ void init_labels(
         labels[idx] = 0;
     }
 }
+
+extern "C" __global__ void zero_float_array(
+    float* arr,
+    int n
+) {
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx < n) {
+        arr[idx] = 0.0f;
+    }
+}
 "#;
 
 const MODULE_NAME: &str = "kmeans_kernels";
 
-/// CUDA-accelerated k-means clustering
+/// CUDA-accelerated k-means clustering with low memory footprint
+///
+/// This implementation uses double-chunking to process both data and centroids
+/// in manageable chunks, minimizing VRAM and RAM usage while maintaining
+/// high performance through GPU acceleration.
 pub struct FastKMeansCuda {
     /// Model configuration
     config: KMeansConfig,
@@ -252,10 +229,9 @@ impl FastKMeansCuda {
                     "compute_squared_norms",
                     "find_nearest_centroids",
                     "accumulate_cluster_sums",
-                    "update_centroids",
-                    "compute_centroid_shift",
                     "init_best_dists",
                     "init_labels",
+                    "zero_float_array",
                 ],
             )
             .map_err(|e| KMeansError::InvalidK(format!("Failed to load CUDA module: {}", e)))?;
@@ -281,6 +257,9 @@ impl FastKMeansCuda {
     }
 
     /// Train the k-means model on the given data using GPU acceleration.
+    ///
+    /// Uses double-chunking to minimize memory usage: data is processed in
+    /// chunks on the host side, and centroids are processed in chunks on GPU.
     pub fn train(&mut self, data: &ArrayView2<f32>) -> Result<(), KMeansError> {
         let n_samples = data.nrows();
         let n_features = data.ncols();
@@ -329,64 +308,95 @@ impl FastKMeansCuda {
                 n_features,
                 k
             );
+            eprintln!(
+                "[CUDA] Using chunk sizes: data={}, centroids={}",
+                self.config.chunk_size_data, self.config.chunk_size_centroids
+            );
         }
 
-        // Copy data to GPU (row-major layout)
-        let data_flat: Vec<f32> = data_subset.as_standard_layout().iter().cloned().collect();
-        let d_data: CudaSlice<f32> = self
-            .device
-            .htod_sync_copy(&data_flat)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to copy data to GPU: {}", e)))?;
-
-        // Compute data norms on GPU
-        let d_data_norms = self.compute_squared_norms_gpu(&d_data, n_samples_used, n_features)?;
+        // Pre-compute data norms on CPU (will be uploaded in chunks)
+        let data_norms = self.compute_squared_norms_cpu(&data_subset.view());
 
         // Initialize centroids (random selection from data)
         let mut centroids = self.initialize_centroids(&data_subset.view(), k, &mut rng);
 
-        // Allocate GPU buffers for the main loop
-        let mut d_labels: CudaSlice<i64> = self
-            .device
-            .alloc_zeros(n_samples_used)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate labels: {}", e)))?;
-        let mut d_best_dists: CudaSlice<f32> = self
-            .device
-            .alloc_zeros(n_samples_used)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate best_dists: {}", e)))?;
+        // Host-side arrays for labels and accumulation
+        let mut labels = Array1::<i64>::zeros(n_samples_used);
 
         // Main k-means loop
         for iteration in 0..self.config.max_iters {
             let iter_start = Instant::now();
 
-            // Copy centroids to GPU
-            let centroids_flat: Vec<f32> = centroids.as_standard_layout().iter().cloned().collect();
-            let d_centroids: CudaSlice<f32> =
-                self.device.htod_sync_copy(&centroids_flat).map_err(|e| {
-                    KMeansError::InvalidK(format!("Failed to copy centroids to GPU: {}", e))
-                })?;
+            // Pre-compute centroid norms on CPU
+            let centroid_norms = self.compute_squared_norms_cpu(&centroids.view());
 
-            // Compute centroid norms
-            let d_centroid_norms = self.compute_squared_norms_gpu(&d_centroids, k, n_features)?;
+            // Process data in chunks (double-chunking: data chunks on host, centroid chunks on GPU)
+            let chunk_size_data = self.config.chunk_size_data;
+            let mut data_start = 0;
 
-            // Initialize best distances to infinity
-            self.init_best_dists_gpu(&mut d_best_dists, n_samples_used)?;
+            while data_start < n_samples_used {
+                let data_end = (data_start + chunk_size_data).min(n_samples_used);
+                let chunk_size = data_end - data_start;
 
-            // Find nearest centroids using chunking for memory efficiency
-            self.find_nearest_centroids_gpu(
-                &d_data,
-                &d_data_norms,
-                &d_centroids,
-                &d_centroid_norms,
-                &mut d_labels,
-                &mut d_best_dists,
-                n_samples_used,
-                n_features,
-                k,
-            )?;
+                // Extract data chunk and upload to GPU
+                let data_chunk = data_subset.slice(ndarray::s![data_start..data_end, ..]);
+                let data_chunk_flat: Vec<f32> = data_chunk.as_standard_layout().iter().cloned().collect();
+                let d_data_chunk: CudaSlice<f32> =
+                    self.device.htod_sync_copy(&data_chunk_flat).map_err(|e| {
+                        KMeansError::InvalidK(format!("Failed to copy data chunk to GPU: {}", e))
+                    })?;
 
-            // Accumulate cluster sums and counts
+                // Upload data norms for this chunk
+                let data_norms_chunk: Vec<f32> = data_norms.slice(ndarray::s![data_start..data_end]).to_vec();
+                let d_data_norms_chunk: CudaSlice<f32> =
+                    self.device.htod_sync_copy(&data_norms_chunk).map_err(|e| {
+                        KMeansError::InvalidK(format!("Failed to copy data norms to GPU: {}", e))
+                    })?;
+
+                // Allocate labels and best_dists for this chunk
+                let mut d_labels_chunk: CudaSlice<i64> = self
+                    .device
+                    .alloc_zeros(chunk_size)
+                    .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate labels: {}", e)))?;
+                let mut d_best_dists_chunk: CudaSlice<f32> = self
+                    .device
+                    .alloc_zeros(chunk_size)
+                    .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate best_dists: {}", e)))?;
+
+                // Initialize best distances to infinity
+                self.init_best_dists_gpu(&mut d_best_dists_chunk, chunk_size)?;
+
+                // Find nearest centroids using centroid chunking on GPU
+                self.find_nearest_centroids_chunked_gpu(
+                    &d_data_chunk,
+                    &d_data_norms_chunk,
+                    &centroids,
+                    &centroid_norms,
+                    &mut d_labels_chunk,
+                    &mut d_best_dists_chunk,
+                    chunk_size,
+                    n_features,
+                    k,
+                )?;
+
+                // Copy labels back to host
+                let labels_chunk = self
+                    .device
+                    .dtoh_sync_copy(&d_labels_chunk)
+                    .map_err(|e| KMeansError::InvalidK(format!("Failed to copy labels: {}", e)))?;
+
+                // Store labels
+                for (i, &label) in labels_chunk.iter().enumerate() {
+                    labels[data_start + i] = label;
+                }
+
+                // GPU memory for this chunk is automatically freed when d_data_chunk etc. go out of scope
+                data_start = data_end;
+            }
+
+            // Accumulate cluster sums and counts on CPU (memory efficient)
             let (cluster_sums, cluster_counts) =
-                self.accumulate_clusters_gpu(&d_data, &d_labels, n_samples_used, n_features, k)?;
+                self.accumulate_clusters_cpu(&data_subset.view(), &labels.view(), k);
 
             // Save old centroids for convergence check
             let prev_centroids = centroids.clone();
@@ -465,6 +475,8 @@ impl FastKMeansCuda {
     }
 
     /// Predict cluster assignments for new data using GPU acceleration.
+    ///
+    /// Uses chunked processing to minimize memory usage.
     pub fn predict(&self, data: &ArrayView2<f32>) -> Result<Array1<i64>, KMeansError> {
         let centroids = self.centroids.as_ref().ok_or(KMeansError::NotFitted)?;
         let n_samples = data.nrows();
@@ -478,57 +490,79 @@ impl FastKMeansCuda {
             )));
         }
 
-        // Copy data to GPU
-        let data_flat: Vec<f32> = data.as_standard_layout().iter().cloned().collect();
-        let d_data: CudaSlice<f32> = self
-            .device
-            .htod_sync_copy(&data_flat)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to copy data to GPU: {}", e)))?;
+        // Pre-compute centroid norms on CPU
+        let centroid_norms = self.compute_squared_norms_cpu(&centroids.view());
 
-        // Copy centroids to GPU
-        let centroids_flat: Vec<f32> = centroids.as_standard_layout().iter().cloned().collect();
-        let d_centroids: CudaSlice<f32> =
-            self.device.htod_sync_copy(&centroids_flat).map_err(|e| {
-                KMeansError::InvalidK(format!("Failed to copy centroids to GPU: {}", e))
-            })?;
+        // Process data in chunks
+        let mut labels = Array1::<i64>::zeros(n_samples);
+        let chunk_size_data = self.config.chunk_size_data;
+        let mut data_start = 0;
 
-        // Compute norms
-        let d_data_norms = self.compute_squared_norms_gpu(&d_data, n_samples, n_features)?;
-        let d_centroid_norms = self.compute_squared_norms_gpu(&d_centroids, k, n_features)?;
+        while data_start < n_samples {
+            let data_end = (data_start + chunk_size_data).min(n_samples);
+            let chunk_size = data_end - data_start;
 
-        // Allocate output buffers
-        let mut d_labels: CudaSlice<i64> = self
-            .device
-            .alloc_zeros(n_samples)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate labels: {}", e)))?;
-        let mut d_best_dists: CudaSlice<f32> = self
-            .device
-            .alloc_zeros(n_samples)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate best_dists: {}", e)))?;
+            // Extract and upload data chunk
+            let data_chunk = data.slice(ndarray::s![data_start..data_end, ..]);
+            let data_chunk_flat: Vec<f32> = data_chunk.as_standard_layout().iter().cloned().collect();
+            let d_data_chunk: CudaSlice<f32> =
+                self.device.htod_sync_copy(&data_chunk_flat).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to copy data chunk to GPU: {}", e))
+                })?;
 
-        // Initialize
-        self.init_best_dists_gpu(&mut d_best_dists, n_samples)?;
+            // Compute data norms for this chunk on GPU
+            let d_data_norms_chunk = self.compute_squared_norms_gpu(&d_data_chunk, chunk_size, n_features)?;
 
-        // Find nearest centroids
-        self.find_nearest_centroids_gpu(
-            &d_data,
-            &d_data_norms,
-            &d_centroids,
-            &d_centroid_norms,
-            &mut d_labels,
-            &mut d_best_dists,
-            n_samples,
-            n_features,
-            k,
-        )?;
+            // Download data norms (needed for find_nearest_centroids_chunked_gpu which takes host centroid data)
+            let data_norms_chunk: Vec<f32> = self
+                .device
+                .dtoh_sync_copy(&d_data_norms_chunk)
+                .map_err(|e| KMeansError::InvalidK(format!("Failed to copy norms: {}", e)))?;
+            let d_data_norms_chunk: CudaSlice<f32> =
+                self.device.htod_sync_copy(&data_norms_chunk).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to copy data norms to GPU: {}", e))
+                })?;
 
-        // Copy results back
-        let labels_vec = self
-            .device
-            .dtoh_sync_copy(&d_labels)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to copy labels from GPU: {}", e)))?;
+            // Allocate output buffers for this chunk
+            let mut d_labels_chunk: CudaSlice<i64> = self
+                .device
+                .alloc_zeros(chunk_size)
+                .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate labels: {}", e)))?;
+            let mut d_best_dists_chunk: CudaSlice<f32> = self
+                .device
+                .alloc_zeros(chunk_size)
+                .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate best_dists: {}", e)))?;
 
-        Ok(Array1::from_vec(labels_vec))
+            // Initialize
+            self.init_best_dists_gpu(&mut d_best_dists_chunk, chunk_size)?;
+
+            // Find nearest centroids using centroid chunking
+            self.find_nearest_centroids_chunked_gpu(
+                &d_data_chunk,
+                &d_data_norms_chunk,
+                centroids,
+                &centroid_norms,
+                &mut d_labels_chunk,
+                &mut d_best_dists_chunk,
+                chunk_size,
+                n_features,
+                k,
+            )?;
+
+            // Copy results back
+            let labels_chunk = self
+                .device
+                .dtoh_sync_copy(&d_labels_chunk)
+                .map_err(|e| KMeansError::InvalidK(format!("Failed to copy labels: {}", e)))?;
+
+            for (i, &label) in labels_chunk.iter().enumerate() {
+                labels[data_start + i] = label;
+            }
+
+            data_start = data_end;
+        }
+
+        Ok(labels)
     }
 
     /// Fit the model and predict cluster assignments in one call.
@@ -560,6 +594,19 @@ impl FastKMeansCuda {
     // =========================================================================
     // Private helper methods
     // =========================================================================
+
+    /// Compute squared norms on CPU (more memory efficient for large datasets)
+    fn compute_squared_norms_cpu(&self, data: &ArrayView2<f32>) -> Array1<f32> {
+        let n_samples = data.nrows();
+        let mut norms = Array1::zeros(n_samples);
+
+        for i in 0..n_samples {
+            let row = data.row(i);
+            norms[i] = row.dot(&row);
+        }
+
+        norms
+    }
 
     fn compute_squared_norms_gpu(
         &self,
@@ -616,12 +663,16 @@ impl FastKMeansCuda {
         Ok(())
     }
 
-    fn find_nearest_centroids_gpu(
+    /// Find nearest centroids using centroid chunking on GPU
+    ///
+    /// This method takes host-side centroids and centroid norms, and uploads
+    /// them in chunks to minimize GPU memory usage for the dot product computation.
+    fn find_nearest_centroids_chunked_gpu(
         &self,
         d_data: &CudaSlice<f32>,
         d_data_norms: &CudaSlice<f32>,
-        d_centroids: &CudaSlice<f32>,
-        d_centroid_norms: &CudaSlice<f32>,
+        centroids: &Array2<f32>,
+        centroid_norms: &Array1<f32>,
         d_labels: &mut CudaSlice<i64>,
         d_best_dists: &mut CudaSlice<f32>,
         n_samples: usize,
@@ -636,27 +687,27 @@ impl FastKMeansCuda {
             let c_end = (c_start + chunk_size).min(k);
             let n_centroids_chunk = c_end - c_start;
 
+            // Extract centroid chunk from host array and upload
+            let centroid_chunk = centroids.slice(ndarray::s![c_start..c_end, ..]);
+            let centroid_chunk_flat: Vec<f32> = centroid_chunk.as_standard_layout().iter().cloned().collect();
+            let d_centroids_chunk: CudaSlice<f32> =
+                self.device.htod_sync_copy(&centroid_chunk_flat).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to copy centroid chunk: {}", e))
+                })?;
+
+            // Extract centroid norms chunk and upload
+            let centroid_norms_chunk: Vec<f32> = centroid_norms.slice(ndarray::s![c_start..c_end]).to_vec();
+            let d_centroid_norms_chunk: CudaSlice<f32> =
+                self.device.htod_sync_copy(&centroid_norms_chunk).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to copy centroid norms chunk: {}", e))
+                })?;
+
             // Allocate dot products matrix (n_samples x n_centroids_chunk)
-            // Note: cuBLAS uses column-major, so we'll get the result in column-major format
             let mut d_dot_products: CudaSlice<f32> = self
                 .device
                 .alloc_zeros(n_samples * n_centroids_chunk)
                 .map_err(|e| {
                     KMeansError::InvalidK(format!("Failed to allocate dot products: {}", e))
-                })?;
-
-            // Copy centroid chunk to device
-            let centroids_all: Vec<f32> = self
-                .device
-                .dtoh_sync_copy(d_centroids)
-                .map_err(|e| KMeansError::InvalidK(format!("Failed to copy centroids: {}", e)))?;
-            let centroids_chunk_start = c_start * n_features;
-            let centroids_chunk_end = c_end * n_features;
-            let d_centroids_chunk: CudaSlice<f32> = self
-                .device
-                .htod_sync_copy(&centroids_all[centroids_chunk_start..centroids_chunk_end])
-                .map_err(|e| {
-                    KMeansError::InvalidK(format!("Failed to copy centroid chunk: {}", e))
                 })?;
 
             // Compute dot products using cuBLAS GEMM
@@ -666,27 +717,8 @@ impl FastKMeansCuda {
             // cuBLAS uses column-major. For row-major data D (n_samples x n_features) and
             // centroids C (n_centroids x n_features), we want D @ C.T
             //
-            // In column-major view:
-            // - D is seen as D^T (n_features x n_samples)
-            // - C is seen as C^T (n_features x n_centroids)
-            //
-            // We want (D @ C.T)^T in column-major = C @ D^T
-            // So: gemm(C_col, D_col) with C_col = C^T in col-major, D_col = D^T in col-major
-            // Result will be (n_centroids x n_samples) in column-major = (n_samples x n_centroids) in row-major
-            //
             // Using gemm: C = alpha * op(A) * op(B) + beta * C
-            // We want: C_col (result in col-major, shape n_centroids x n_samples)
-            //   = centroids_col^T @ data_col
-            //   = op(centroids) * op(data) where:
-            //     - op(centroids) = T, input shape (n_features x n_centroids), output (n_centroids x n_features)
-            //     - op(data) = N, input shape (n_features x n_samples), output (n_features x n_samples)
-            //
-            // So: m = n_centroids, n = n_samples, k = n_features
-            //     transa = T, transb = N
-            //     A = centroids, lda = n_features
-            //     B = data, ldb = n_features
-            //     C = result, ldc = n_centroids
-
+            // Result will be (n_centroids x n_samples) in column-major = (n_samples x n_centroids) in row-major
             let gemm_cfg = GemmConfig {
                 transa: cublasOperation_t::CUBLAS_OP_T,
                 transb: cublasOperation_t::CUBLAS_OP_N,
@@ -705,19 +737,6 @@ impl FastKMeansCuda {
                     .gemm(gemm_cfg, &d_centroids_chunk, d_data, &mut d_dot_products)
             }
             .map_err(|e| KMeansError::InvalidK(format!("cuBLAS GEMM failed: {}", e)))?;
-
-            // Extract centroid norms for this chunk
-            let centroid_norms_all: Vec<f32> =
-                self.device.dtoh_sync_copy(d_centroid_norms).map_err(|e| {
-                    KMeansError::InvalidK(format!("Failed to copy centroid norms: {}", e))
-                })?;
-
-            let d_centroid_norms_chunk: CudaSlice<f32> = self
-                .device
-                .htod_sync_copy(&centroid_norms_all[c_start..c_end])
-                .map_err(|e| {
-                    KMeansError::InvalidK(format!("Failed to copy centroid norms chunk: {}", e))
-                })?;
 
             // Update labels and best distances
             let block_size = 256;
@@ -748,72 +767,38 @@ impl FastKMeansCuda {
             }
             .map_err(|e| KMeansError::InvalidK(format!("Failed to launch kernel: {}", e)))?;
 
+            // GPU memory for centroid chunk and dot products freed when they go out of scope
             c_start = c_end;
         }
 
         Ok(())
     }
 
-    fn accumulate_clusters_gpu(
+    /// Accumulate cluster sums and counts on CPU
+    /// This avoids keeping large intermediate GPU buffers
+    fn accumulate_clusters_cpu(
         &self,
-        d_data: &CudaSlice<f32>,
-        d_labels: &CudaSlice<i64>,
-        n_samples: usize,
-        n_features: usize,
+        data: &ArrayView2<f32>,
+        labels: &ArrayView1<i64>,
         k: usize,
-    ) -> Result<(Array2<f32>, Array1<f32>), KMeansError> {
-        // Allocate accumulators
-        let mut d_cluster_sums: CudaSlice<f32> =
-            self.device.alloc_zeros(k * n_features).map_err(|e| {
-                KMeansError::InvalidK(format!("Failed to allocate cluster sums: {}", e))
-            })?;
-        let mut d_cluster_counts: CudaSlice<f32> = self.device.alloc_zeros(k).map_err(|e| {
-            KMeansError::InvalidK(format!("Failed to allocate cluster counts: {}", e))
-        })?;
+    ) -> (Array2<f32>, Array1<f32>) {
+        let n_samples = data.nrows();
+        let n_features = data.ncols();
 
-        // Launch accumulation kernel
-        let block_size = 256;
-        let grid_size = (n_samples + block_size - 1) / block_size;
+        let mut cluster_sums = Array2::<f32>::zeros((k, n_features));
+        let mut cluster_counts = Array1::<f32>::zeros(k);
 
-        let func = self.get_func("accumulate_cluster_sums")?;
-
-        let cfg = LaunchConfig {
-            block_dim: (block_size as u32, 1, 1),
-            grid_dim: (grid_size as u32, 1, 1),
-            shared_mem_bytes: 0,
-        };
-
-        unsafe {
-            func.launch(
-                cfg,
-                (
-                    d_data,
-                    d_labels,
-                    &mut d_cluster_sums,
-                    &mut d_cluster_counts,
-                    n_samples as i32,
-                    n_features as i32,
-                    k as i32,
-                ),
-            )
+        for i in 0..n_samples {
+            let cluster_idx = labels[i] as usize;
+            if cluster_idx < k {
+                cluster_counts[cluster_idx] += 1.0;
+                for j in 0..n_features {
+                    cluster_sums[[cluster_idx, j]] += data[[i, j]];
+                }
+            }
         }
-        .map_err(|e| KMeansError::InvalidK(format!("Failed to launch kernel: {}", e)))?;
 
-        // Copy results back to host
-        let sums_vec = self
-            .device
-            .dtoh_sync_copy(&d_cluster_sums)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to copy cluster sums: {}", e)))?;
-        let counts_vec = self
-            .device
-            .dtoh_sync_copy(&d_cluster_counts)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to copy cluster counts: {}", e)))?;
-
-        let cluster_sums = Array2::from_shape_vec((k, n_features), sums_vec)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to reshape sums: {}", e)))?;
-        let cluster_counts = Array1::from_vec(counts_vec);
-
-        Ok((cluster_sums, cluster_counts))
+        (cluster_sums, cluster_counts)
     }
 
     fn subsample_data(
@@ -1025,5 +1010,29 @@ mod tests {
             "CUDA and CPU labels should mostly match (ratio: {})",
             match_ratio
         );
+    }
+
+    #[test]
+    fn test_cuda_chunked_processing() {
+        // Test with small chunk sizes to verify chunking works correctly
+        let data = Array2::random((1000, 32), Uniform::new(-1.0f32, 1.0));
+
+        let config = KMeansConfig::new(10)
+            .with_seed(42)
+            .with_max_iters(5)
+            .with_chunk_size_data(200)  // Small data chunk
+            .with_chunk_size_centroids(3)  // Small centroid chunk
+            .with_max_points_per_centroid(None);
+
+        let mut kmeans = FastKMeansCuda::with_config(config).unwrap();
+        let result = kmeans.train(&data.view());
+        assert!(result.is_ok(), "Chunked CUDA training should succeed: {:?}", result.err());
+
+        let labels = kmeans.predict(&data.view()).unwrap();
+        assert_eq!(labels.len(), 1000);
+
+        for &label in labels.iter() {
+            assert!((0..10).contains(&label));
+        }
     }
 }

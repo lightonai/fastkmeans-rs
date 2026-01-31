@@ -49,14 +49,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Configure k-means to match Python fastkmeans behavior
+    // Chunk sizes optimized for ~400MB peak VRAM usage:
+    // dot_products = 10,000 × 10,000 × 4 bytes = 400MB
     let config = KMeansConfig {
         k,
         max_iters,
         tol,
         seed,
         max_points_per_centroid: None, // Disable subsampling for exact comparison
-        chunk_size_data: 51_200,
-        chunk_size_centroids: 10_240,
+        chunk_size_data: 10_000,
+        chunk_size_centroids: 10_000,
         verbose: false,
     };
 
