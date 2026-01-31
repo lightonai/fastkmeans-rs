@@ -68,6 +68,35 @@
 //! # Linux/Windows (requires OpenBLAS installed)
 //! fastkmeans-rs = { version = "0.1", features = ["openblas"] }
 //! ```
+//!
+//! ## CUDA GPU Acceleration
+//!
+//! For maximum performance on large datasets, enable CUDA support:
+//!
+//! ```toml
+//! fastkmeans-rs = { version = "0.1", features = ["cuda"] }
+//! ```
+//!
+//! This requires the CUDA toolkit to be installed. Then use `FastKMeansCuda`:
+//!
+//! ```ignore
+//! use fastkmeans_rs::cuda::FastKMeansCuda;
+//! use fastkmeans_rs::KMeansConfig;
+//! use ndarray::Array2;
+//! use ndarray_rand::RandomExt;
+//! use ndarray_rand::rand_distr::Uniform;
+//!
+//! let data = Array2::random((100000, 128), Uniform::new(-1.0f32, 1.0));
+//!
+//! let config = KMeansConfig::new(1024)
+//!     .with_max_iters(50)
+//!     .with_verbose(true);
+//!
+//! let mut kmeans = FastKMeansCuda::with_config(config).unwrap();
+//! kmeans.train(&data.view()).unwrap();
+//!
+//! let labels = kmeans.predict(&data.view()).unwrap();
+//! ```
 
 // Link BLAS libraries when features are enabled
 #[cfg(feature = "accelerate")]
@@ -82,6 +111,12 @@ mod distance;
 mod error;
 mod kmeans;
 
+#[cfg(feature = "cuda")]
+pub mod cuda;
+
 pub use config::KMeansConfig;
 pub use error::KMeansError;
 pub use kmeans::FastKMeans;
+
+#[cfg(feature = "cuda")]
+pub use cuda::FastKMeansCuda;

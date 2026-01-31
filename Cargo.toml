@@ -28,6 +28,9 @@ openblas-src = { version = "0.10", features = [
 ], optional = true }
 accelerate-src = { version = "0.3", optional = true }
 
+# CUDA dependencies (optional)
+cudarc = { version = "0.12", features = ["cuda-version-from-build-system", "cublas"], optional = true }
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 approx = "0.5"
@@ -42,10 +45,19 @@ openblas = ["blas-src", "openblas-src", "ndarray/blas"]
 # Use Apple Accelerate framework (macOS only, recommended for macOS)
 accelerate = ["blas-src", "accelerate-src", "ndarray/blas"]
 
+# CUDA GPU acceleration
+# Requires CUDA toolkit installed (nvcc in PATH)
+cuda = ["cudarc"]
+
 [[bin]]
 name = "compare-kmeans"
 path = "src/bin/compare_kmeans.rs"
 required-features = ["npy"]
+
+[[bin]]
+name = "compare-kmeans-cuda"
+path = "src/bin/compare_kmeans_cuda.rs"
+required-features = ["npy", "cuda"]
 
 [[bench]]
 name = "kmeans_benchmark"
