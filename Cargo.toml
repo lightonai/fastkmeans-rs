@@ -29,7 +29,7 @@ openblas-src = { version = "0.10", features = [
 accelerate-src = { version = "0.3", optional = true }
 
 # CUDA dependencies (optional)
-cudarc = { version = "0.12", features = ["cuda-version-from-build-system", "cublas"], optional = true }
+cudarc = { version = "0.19.3", default-features = false, features = ["cuda-version-from-build-system", "cublas", "nvrtc"], optional = true }
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
