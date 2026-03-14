@@ -28,8 +28,7 @@ use crate::error::KMeansError;
 use cudarc::cublas::sys::cublasOperation_t;
 use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{
-    CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig,
-    PushKernelArg,
+    CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
 use cudarc::nvrtc::compile_ptx;
 use ndarray::{Array1, Array2, ArrayView1, ArrayView2};
@@ -102,8 +101,6 @@ extern "C" __global__ void init_best_dists(
 }
 "#;
 
-const MODULE_NAME: &str = "kmeans_kernels";
-
 /// CUDA-accelerated k-means clustering with low memory footprint
 ///
 /// This implementation uses double-chunking to process both data and centroids
@@ -121,7 +118,7 @@ pub struct FastKMeansCuda {
     centroids: Option<Array2<f32>>,
 
     /// CUDA device
-    device: Arc<CudarcContext>,
+    _device: Arc<CudarcContext>,
 
     /// Default CUDA stream
     stream: Arc<CudaStream>,
@@ -186,8 +183,9 @@ impl FastKMeansCuda {
         let stream = device.default_stream();
 
         // Compile PTX
-        let ptx = compile_ptx(CUDA_KERNELS)
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to compile CUDA kernels: {:?}", e)))?;
+        let ptx = compile_ptx(CUDA_KERNELS).map_err(|e| {
+            KMeansError::InvalidK(format!("Failed to compile CUDA kernels: {:?}", e))
+        })?;
 
         // Load module with all functions
         let module = device
@@ -205,14 +203,15 @@ impl FastKMeansCuda {
 
         // Create cuBLAS handle
         // Note: TF32 is enabled by default on Ampere+ GPUs for cuBLAS SGEMM
-        let blas = CudaBlas::new(stream.clone())
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to create cuBLAS handle: {:?}", e)))?;
+        let blas = CudaBlas::new(stream.clone()).map_err(|e| {
+            KMeansError::InvalidK(format!("Failed to create cuBLAS handle: {:?}", e))
+        })?;
 
         Ok(Self {
             config,
             d: d.unwrap_or(0),
             centroids: None,
-            device,
+            _device: device,
             stream,
             blas,
             compute_squared_norms_func,
@@ -305,28 +304,30 @@ impl FastKMeansCuda {
 
                 // Extract data chunk and upload to GPU
                 let data_chunk = data_subset.slice(ndarray::s![data_start..data_end, ..]);
-                let data_chunk_flat: Vec<f32> = data_chunk.as_standard_layout().iter().cloned().collect();
+                let data_chunk_flat: Vec<f32> =
+                    data_chunk.as_standard_layout().iter().cloned().collect();
                 let d_data_chunk: CudaSlice<f32> =
                     self.stream.clone_htod(&data_chunk_flat).map_err(|e| {
                         KMeansError::InvalidK(format!("Failed to copy data chunk to GPU: {:?}", e))
                     })?;
 
                 // Upload data norms for this chunk
-                let data_norms_chunk: Vec<f32> = data_norms.slice(ndarray::s![data_start..data_end]).to_vec();
+                let data_norms_chunk: Vec<f32> =
+                    data_norms.slice(ndarray::s![data_start..data_end]).to_vec();
                 let d_data_norms_chunk: CudaSlice<f32> =
                     self.stream.clone_htod(&data_norms_chunk).map_err(|e| {
                         KMeansError::InvalidK(format!("Failed to copy data norms to GPU: {:?}", e))
                     })?;
 
                 // Allocate labels and best_dists for this chunk
-                let mut d_labels_chunk: CudaSlice<i64> = self
-                    .stream
-                    .alloc_zeros(chunk_size)
-                    .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate labels: {:?}", e)))?;
-                let mut d_best_dists_chunk: CudaSlice<f32> = self
-                    .stream
-                    .alloc_zeros(chunk_size)
-                    .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate best_dists: {:?}", e)))?;
+                let mut d_labels_chunk: CudaSlice<i64> =
+                    self.stream.alloc_zeros(chunk_size).map_err(|e| {
+                        KMeansError::InvalidK(format!("Failed to allocate labels: {:?}", e))
+                    })?;
+                let mut d_best_dists_chunk: CudaSlice<f32> =
+                    self.stream.alloc_zeros(chunk_size).map_err(|e| {
+                        KMeansError::InvalidK(format!("Failed to allocate best_dists: {:?}", e))
+                    })?;
 
                 // Initialize best distances to infinity
                 self.init_best_dists_gpu(&mut d_best_dists_chunk, chunk_size)?;
@@ -345,10 +346,9 @@ impl FastKMeansCuda {
                 )?;
 
                 // Copy labels back to host
-                let labels_chunk = self
-                    .stream
-                    .clone_dtoh(&d_labels_chunk)
-                    .map_err(|e| KMeansError::InvalidK(format!("Failed to copy labels: {:?}", e)))?;
+                let labels_chunk = self.stream.clone_dtoh(&d_labels_chunk).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to copy labels: {:?}", e))
+                })?;
 
                 // Store labels
                 for (i, &label) in labels_chunk.iter().enumerate() {
@@ -468,14 +468,16 @@ impl FastKMeansCuda {
 
             // Extract and upload data chunk
             let data_chunk = data.slice(ndarray::s![data_start..data_end, ..]);
-            let data_chunk_flat: Vec<f32> = data_chunk.as_standard_layout().iter().cloned().collect();
+            let data_chunk_flat: Vec<f32> =
+                data_chunk.as_standard_layout().iter().cloned().collect();
             let d_data_chunk: CudaSlice<f32> =
                 self.stream.clone_htod(&data_chunk_flat).map_err(|e| {
                     KMeansError::InvalidK(format!("Failed to copy data chunk to GPU: {:?}", e))
                 })?;
 
             // Compute data norms for this chunk on GPU
-            let d_data_norms_chunk = self.compute_squared_norms_gpu(&d_data_chunk, chunk_size, n_features)?;
+            let d_data_norms_chunk =
+                self.compute_squared_norms_gpu(&d_data_chunk, chunk_size, n_features)?;
 
             // Download data norms
             let data_norms_chunk: Vec<f32> = self
@@ -488,14 +490,14 @@ impl FastKMeansCuda {
                 })?;
 
             // Allocate output buffers for this chunk
-            let mut d_labels_chunk: CudaSlice<i64> = self
-                .stream
-                .alloc_zeros(chunk_size)
-                .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate labels: {:?}", e)))?;
-            let mut d_best_dists_chunk: CudaSlice<f32> = self
-                .stream
-                .alloc_zeros(chunk_size)
-                .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate best_dists: {:?}", e)))?;
+            let mut d_labels_chunk: CudaSlice<i64> =
+                self.stream.alloc_zeros(chunk_size).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to allocate labels: {:?}", e))
+                })?;
+            let mut d_best_dists_chunk: CudaSlice<f32> =
+                self.stream.alloc_zeros(chunk_size).map_err(|e| {
+                    KMeansError::InvalidK(format!("Failed to allocate best_dists: {:?}", e))
+                })?;
 
             // Initialize
             self.init_best_dists_gpu(&mut d_best_dists_chunk, chunk_size)?;
@@ -584,7 +586,7 @@ impl FastKMeansCuda {
             .map_err(|e| KMeansError::InvalidK(format!("Failed to allocate norms: {:?}", e)))?;
 
         let block_size = 256;
-        let grid_size = (n_samples + block_size - 1) / block_size;
+        let grid_size = n_samples.div_ceil(block_size);
 
         let cfg = LaunchConfig {
             block_dim: (block_size as u32, 1, 1),
@@ -614,7 +616,7 @@ impl FastKMeansCuda {
         n_samples: usize,
     ) -> Result<(), KMeansError> {
         let block_size = 256;
-        let grid_size = (n_samples + block_size - 1) / block_size;
+        let grid_size = n_samples.div_ceil(block_size);
 
         let cfg = LaunchConfig {
             block_dim: (block_size as u32, 1, 1),
@@ -630,12 +632,13 @@ impl FastKMeansCuda {
                 .arg(&n_samples_i32)
                 .launch(cfg)
         }
-            .map_err(|e| KMeansError::InvalidK(format!("Failed to launch kernel: {:?}", e)))?;
+        .map_err(|e| KMeansError::InvalidK(format!("Failed to launch kernel: {:?}", e)))?;
 
         Ok(())
     }
 
     /// Find nearest centroids using centroid chunking on GPU with cuBLAS GEMM
+    #[allow(clippy::too_many_arguments)]
     fn find_nearest_centroids_chunked_gpu(
         &self,
         d_data: &CudaSlice<f32>,
@@ -658,14 +661,19 @@ impl FastKMeansCuda {
 
             // Extract centroid chunk from host array and upload
             let centroid_chunk = centroids.slice(ndarray::s![c_start..c_end, ..]);
-            let centroid_chunk_flat: Vec<f32> = centroid_chunk.as_standard_layout().iter().cloned().collect();
+            let centroid_chunk_flat: Vec<f32> = centroid_chunk
+                .as_standard_layout()
+                .iter()
+                .cloned()
+                .collect();
             let d_centroids_chunk: CudaSlice<f32> =
                 self.stream.clone_htod(&centroid_chunk_flat).map_err(|e| {
                     KMeansError::InvalidK(format!("Failed to copy centroid chunk: {:?}", e))
                 })?;
 
             // Extract centroid norms chunk and upload
-            let centroid_norms_chunk: Vec<f32> = centroid_norms.slice(ndarray::s![c_start..c_end]).to_vec();
+            let centroid_norms_chunk: Vec<f32> =
+                centroid_norms.slice(ndarray::s![c_start..c_end]).to_vec();
             let d_centroid_norms_chunk: CudaSlice<f32> =
                 self.stream.clone_htod(&centroid_norms_chunk).map_err(|e| {
                     KMeansError::InvalidK(format!("Failed to copy centroid norms chunk: {:?}", e))
@@ -701,7 +709,7 @@ impl FastKMeansCuda {
 
             // Update labels and best distances
             let block_size = 256;
-            let grid_size = (n_samples + block_size - 1) / block_size;
+            let grid_size = n_samples.div_ceil(block_size);
 
             let cfg = LaunchConfig {
                 block_dim: (block_size as u32, 1, 1),
@@ -981,7 +989,11 @@ mod tests {
 
         let mut kmeans = FastKMeansCuda::with_config(config).unwrap();
         let result = kmeans.train(&data.view());
-        assert!(result.is_ok(), "Chunked CUDA training should succeed: {:?}", result.err());
+        assert!(
+            result.is_ok(),
+            "Chunked CUDA training should succeed: {:?}",
+            result.err()
+        );
 
         let labels = kmeans.predict(&data.view()).unwrap();
         assert_eq!(labels.len(), 1000);
