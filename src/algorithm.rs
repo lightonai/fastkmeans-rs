@@ -1,14 +1,55 @@
 use crate::config::KMeansConfig;
 use crate::distance::{
-    compute_centroid_shift, compute_squared_norms, find_nearest_centroids_chunked,
+    accumulate_clusters, compute_centroid_shift, compute_squared_norms,
+    find_nearest_centroids_chunked,
 };
 use crate::error::KMeansError;
 use ndarray::{Array1, Array2, ArrayView2};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
 use rand_chacha::ChaCha8Rng;
+#[cfg(not(any(feature = "mkl", feature = "accelerate")))]
 use rayon::prelude::*;
+use std::sync::Once;
 use std::time::Instant;
+
+// =========================================================================
+// Threading configuration per BLAS backend
+// =========================================================================
+
+static INIT_THREADING: Once = Once::new();
+
+#[cfg(feature = "openblas")]
+extern "C" {
+    fn openblas_set_num_threads(num_threads: std::ffi::c_int);
+}
+
+fn ensure_threading_configured() {
+    INIT_THREADING.call_once(|| {
+        // OpenBLAS: force 1 thread — rayon handles parallelism via the
+        // parallel data-chunk loop. This avoids nested parallelism
+        // (rayon threads × BLAS threads) which causes severe contention
+        // on NUMA systems.
+        #[cfg(feature = "openblas")]
+        if std::env::var("OPENBLAS_NUM_THREADS").is_err() {
+            unsafe {
+                openblas_set_num_threads(1);
+            }
+        }
+
+        // Cap rayon on high-core machines.
+        if std::env::var("RAYON_NUM_THREADS").is_err() {
+            let n = std::thread::available_parallelism()
+                .map(|n| n.get())
+                .unwrap_or(12);
+            let capped = n.min(12);
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(capped)
+                .build_global()
+                .ok();
+        }
+    });
+}
 
 /// Result of the k-means algorithm
 #[allow(dead_code)]
@@ -18,19 +59,145 @@ pub struct KMeansResult {
     pub n_iterations: usize,
 }
 
-/// Run the double-chunked k-means algorithm
-///
-/// This algorithm processes both data and centroids in chunks to minimize
-/// memory usage while maintaining efficiency.
+// =========================================================================
+// MKL / Accelerate path: sequential chunks, BLAS handles all parallelism
+// =========================================================================
+
+/// Sequential algorithm — lets BLAS thread the GEMM internally.
+/// Best for MKL and Accelerate which have efficient multi-threaded GEMM.
+#[cfg(any(feature = "mkl", feature = "accelerate"))]
+fn run_iteration(
+    data_subset: &Array2<f32>,
+    data_norms: &Array1<f32>,
+    centroids: &Array2<f32>,
+    labels: &mut Array1<i64>,
+    cluster_sums: &mut Array2<f32>,
+    cluster_counts: &mut Array1<f32>,
+    config: &KMeansConfig,
+) {
+    let n_samples_used = data_subset.nrows();
+
+    let centroid_norms = compute_squared_norms(&centroids.view());
+
+    cluster_sums.fill(0.0);
+    cluster_counts.fill(0.0);
+
+    // Sequential: one chunk at a time, BLAS uses all cores for GEMM
+    let mut start_idx = 0;
+    while start_idx < n_samples_used {
+        let end_idx = (start_idx + config.chunk_size_data).min(n_samples_used);
+        let data_chunk = data_subset.slice(ndarray::s![start_idx..end_idx, ..]);
+        let data_chunk_norms = data_norms.slice(ndarray::s![start_idx..end_idx]);
+
+        let chunk_labels = find_nearest_centroids_chunked(
+            &data_chunk,
+            &data_chunk_norms,
+            &centroids.view(),
+            &centroid_norms.view(),
+            config.chunk_size_centroids,
+        );
+
+        let labels_slice = labels.as_slice_mut().unwrap();
+        labels_slice[start_idx..end_idx].copy_from_slice(chunk_labels.as_slice().unwrap());
+
+        accumulate_clusters(
+            &data_chunk,
+            chunk_labels.as_slice().unwrap(),
+            cluster_sums,
+            cluster_counts,
+        );
+
+        start_idx = end_idx;
+    }
+}
+
+// =========================================================================
+// OpenBLAS / no-BLAS path: parallel chunks via rayon, single-threaded BLAS
+// =========================================================================
+
+/// Parallel algorithm — rayon parallelizes over data chunks, each running
+/// a single-threaded GEMM. Best for OpenBLAS (poor multi-thread scaling)
+/// and no-BLAS (ndarray's dot is single-threaded).
+#[cfg(not(any(feature = "mkl", feature = "accelerate")))]
+fn run_iteration(
+    data_subset: &Array2<f32>,
+    data_norms: &Array1<f32>,
+    centroids: &Array2<f32>,
+    labels: &mut Array1<i64>,
+    cluster_sums: &mut Array2<f32>,
+    cluster_counts: &mut Array1<f32>,
+    config: &KMeansConfig,
+) {
+    let n_samples_used = data_subset.nrows();
+    let k = config.k;
+    let n_features = data_subset.ncols();
+
+    let centroid_norms = compute_squared_norms(&centroids.view());
+
+    cluster_sums.fill(0.0);
+    cluster_counts.fill(0.0);
+
+    let chunk_ranges: Vec<(usize, usize)> = (0..n_samples_used)
+        .step_by(config.chunk_size_data)
+        .map(|start| (start, (start + config.chunk_size_data).min(n_samples_used)))
+        .collect();
+
+    // Parallel: each rayon thread processes one data chunk with single-threaded BLAS
+    let chunk_results: Vec<(Array1<i64>, Array2<f32>, Array1<f32>)> = chunk_ranges
+        .par_iter()
+        .map(|&(start_idx, end_idx)| {
+            let data_chunk = data_subset.slice(ndarray::s![start_idx..end_idx, ..]);
+            let data_chunk_norms = data_norms.slice(ndarray::s![start_idx..end_idx]);
+
+            let chunk_labels = find_nearest_centroids_chunked(
+                &data_chunk,
+                &data_chunk_norms,
+                &centroids.view(),
+                &centroid_norms.view(),
+                config.chunk_size_centroids,
+            );
+
+            // Per-thread accumulation (avoids shared-state contention)
+            let mut local_sums = Array2::<f32>::zeros((k, n_features));
+            let mut local_counts = Array1::<f32>::zeros(k);
+            accumulate_clusters(
+                &data_chunk,
+                chunk_labels.as_slice().unwrap(),
+                &mut local_sums,
+                &mut local_counts,
+            );
+
+            (chunk_labels, local_sums, local_counts)
+        })
+        .collect();
+
+    // Reduce
+    for (ci, (chunk_labels, local_sums, local_counts)) in chunk_results.into_iter().enumerate() {
+        let start_idx = chunk_ranges[ci].0;
+        let end_idx = chunk_ranges[ci].1;
+
+        let labels_slice = labels.as_slice_mut().unwrap();
+        labels_slice[start_idx..end_idx].copy_from_slice(chunk_labels.as_slice().unwrap());
+
+        *cluster_sums += &local_sums;
+        *cluster_counts += &local_counts;
+    }
+}
+
+// =========================================================================
+// Main algorithm (shared across all backends)
+// =========================================================================
+
 pub fn kmeans_double_chunked(
     data: &ArrayView2<f32>,
     config: &KMeansConfig,
 ) -> Result<KMeansResult, KMeansError> {
+    ensure_threading_configured();
+
     let n_samples = data.nrows();
     let n_features = data.ncols();
     let k = config.k;
 
-    // Validate inputs
     if k == 0 {
         return Err(KMeansError::InvalidK(
             "k must be greater than 0".to_string(),
@@ -44,10 +211,8 @@ pub fn kmeans_double_chunked(
         )));
     }
 
-    // Initialize RNG
     let mut rng = ChaCha8Rng::seed_from_u64(config.seed);
 
-    // Subsample if needed
     let (data_subset, _subset_indices) = subsample_data(data, config, &mut rng)?;
     let n_samples_used = data_subset.nrows();
 
@@ -65,90 +230,48 @@ pub fn kmeans_double_chunked(
         );
     }
 
-    // Pre-compute data norms
     let data_norms = compute_squared_norms(&data_subset.view());
-
-    // Initialize centroids (random selection from data)
     let mut centroids = initialize_centroids(&data_subset.view(), k, &mut rng);
-
-    // Main k-means loop
-    let mut labels = Array1::zeros(n_samples_used);
+    let mut labels = Array1::<i64>::zeros(n_samples_used);
     let mut n_iterations = 0;
+
+    // Pre-allocate accumulation buffers
+    let mut cluster_sums = Array2::<f32>::zeros((k, n_features));
+    let mut cluster_counts = Array1::<f32>::zeros(k);
 
     for iteration in 0..config.max_iters {
         let iter_start = Instant::now();
         n_iterations = iteration + 1;
 
-        // Pre-compute centroid norms
-        let centroid_norms = compute_squared_norms(&centroids.view());
+        // Dispatch to backend-specific iteration
+        run_iteration(
+            &data_subset,
+            &data_norms,
+            &centroids,
+            &mut labels,
+            &mut cluster_sums,
+            &mut cluster_counts,
+            config,
+        );
 
-        // Build chunk ranges for parallel processing
-        let chunk_ranges: Vec<(usize, usize)> = (0..n_samples_used)
-            .step_by(config.chunk_size_data)
-            .map(|start| (start, (start + config.chunk_size_data).min(n_samples_used)))
-            .collect();
-
-        // Process all chunks in parallel
-        #[allow(clippy::type_complexity)]
-        let chunk_results: Vec<(Array2<f32>, Array1<f32>, Vec<(usize, i64)>)> = chunk_ranges
-            .par_iter()
-            .map(|&(start_idx, end_idx)| {
-                let data_chunk = data_subset.slice(ndarray::s![start_idx..end_idx, ..]);
-                let data_chunk_norms = data_norms.slice(ndarray::s![start_idx..end_idx]);
-
-                let chunk_labels = find_nearest_centroids_chunked(
-                    &data_chunk,
-                    &data_chunk_norms,
-                    &centroids.view(),
-                    &centroid_norms.view(),
-                    config.chunk_size_centroids,
-                );
-
-                let mut local_sums: Array2<f32> = Array2::zeros((k, n_features));
-                let mut local_counts: Array1<f32> = Array1::zeros(k);
-                let mut label_pairs: Vec<(usize, i64)> = Vec::with_capacity(end_idx - start_idx);
-
-                for (i, &label) in chunk_labels.iter().enumerate() {
-                    let cluster_idx = label as usize;
-                    local_counts[cluster_idx] += 1.0;
-                    local_sums
-                        .row_mut(cluster_idx)
-                        .scaled_add(1.0, &data_chunk.row(i));
-                    label_pairs.push((start_idx + i, label));
-                }
-
-                (local_sums, local_counts, label_pairs)
-            })
-            .collect();
-
-        // Reduce: merge all chunk results
-        let mut cluster_sums: Array2<f32> = Array2::zeros((k, n_features));
-        let mut cluster_counts: Array1<f32> = Array1::zeros(k);
-
-        for (local_sums, local_counts, label_pairs) in chunk_results {
-            cluster_sums += &local_sums;
-            cluster_counts += &local_counts;
-            for (idx, label) in label_pairs {
-                labels[idx] = label;
-            }
-        }
-
-        // Compute new centroids using vectorized operations
+        // Update centroids
         let prev_centroids = centroids.clone();
         let mut empty_clusters = Vec::new();
 
         for cluster_idx in 0..k {
             let count = cluster_counts[cluster_idx];
             if count > 0.0 {
-                let mut centroid_row = centroids.row_mut(cluster_idx);
-                let sum_row = cluster_sums.row(cluster_idx);
-                centroid_row.assign(&(&sum_row / count));
+                let inv_count = 1.0 / count;
+                let centroid_slice = centroids.row_mut(cluster_idx).into_slice().unwrap();
+                let sum_slice = cluster_sums.row(cluster_idx).to_slice().unwrap();
+                for j in 0..n_features {
+                    centroid_slice[j] = sum_slice[j] * inv_count;
+                }
             } else {
                 empty_clusters.push(cluster_idx);
             }
         }
 
-        // Reinitialize empty clusters
         if !empty_clusters.is_empty() {
             let indices: Vec<usize> = (0..n_samples_used).collect();
             let random_indices: Vec<usize> = indices
@@ -157,10 +280,9 @@ pub fn kmeans_double_chunked(
                 .collect();
 
             for (i, &cluster_idx) in empty_clusters.iter().enumerate() {
-                let data_idx = random_indices[i];
                 centroids
                     .row_mut(cluster_idx)
-                    .assign(&data_subset.row(data_idx));
+                    .assign(&data_subset.row(random_indices[i]));
             }
 
             if config.verbose {
@@ -168,7 +290,6 @@ pub fn kmeans_double_chunked(
             }
         }
 
-        // Check convergence
         let shift = compute_centroid_shift(&prev_centroids.view(), &centroids.view());
 
         if config.verbose {
@@ -202,7 +323,10 @@ pub fn kmeans_double_chunked(
     })
 }
 
-/// Subsample data if it exceeds the maximum size based on max_points_per_centroid
+// =========================================================================
+// Helpers
+// =========================================================================
+
 fn subsample_data(
     data: &ArrayView2<f32>,
     config: &KMeansConfig,
@@ -220,11 +344,10 @@ fn subsample_data(
                 );
             }
 
-            // Random permutation and select first max_samples
             let mut indices: Vec<usize> = (0..n_samples).collect();
             indices.shuffle(rng);
             indices.truncate(max_samples);
-            indices.sort_unstable(); // Sort for cache-friendly access
+            indices.sort_unstable();
 
             let n_features = data.ncols();
             let mut subset = Array2::zeros((max_samples, n_features));
@@ -236,11 +359,9 @@ fn subsample_data(
         }
     }
 
-    // No subsampling needed - copy data
     Ok((data.to_owned(), None))
 }
 
-/// Initialize centroids by randomly selecting k data points
 fn initialize_centroids(data: &ArrayView2<f32>, k: usize, rng: &mut ChaCha8Rng) -> Array2<f32> {
     let n_samples = data.nrows();
     let n_features = data.ncols();
@@ -256,7 +377,6 @@ fn initialize_centroids(data: &ArrayView2<f32>, k: usize, rng: &mut ChaCha8Rng) 
     centroids
 }
 
-/// Predict cluster assignments for new data using trained centroids
 pub fn predict_labels(
     data: &ArrayView2<f32>,
     centroids: &ArrayView2<f32>,
@@ -265,13 +385,11 @@ pub fn predict_labels(
 ) -> Array1<i64> {
     let n_samples = data.nrows();
 
-    // Pre-compute norms
     let data_norms = compute_squared_norms(data);
     let centroid_norms = compute_squared_norms(centroids);
 
     let mut labels = Array1::zeros(n_samples);
 
-    // Process in chunks
     let mut start_idx = 0;
     while start_idx < n_samples {
         let end_idx = (start_idx + chunk_size_data).min(n_samples);
@@ -286,9 +404,8 @@ pub fn predict_labels(
             chunk_size_centroids,
         );
 
-        for (i, &label) in chunk_labels.iter().enumerate() {
-            labels[start_idx + i] = label;
-        }
+        let labels_slice = labels.as_slice_mut().unwrap();
+        labels_slice[start_idx..end_idx].copy_from_slice(chunk_labels.as_slice().unwrap());
 
         start_idx = end_idx;
     }
@@ -334,7 +451,6 @@ mod tests {
         assert_eq!(result.centroids.ncols(), 16);
         assert_eq!(result.labels.len(), 500);
 
-        // All labels should be valid
         for &label in result.labels.iter() {
             assert!((0..5).contains(&label));
         }
@@ -349,7 +465,7 @@ mod tests {
             max_iters: 5,
             tol: 1e-8,
             seed: 42,
-            max_points_per_centroid: Some(256), // Will subsample to 2560
+            max_points_per_centroid: Some(256),
             chunk_size_data: 51_200,
             chunk_size_centroids: 10_240,
             verbose: false,
@@ -358,7 +474,6 @@ mod tests {
         let result = kmeans_double_chunked(&data.view(), &config).unwrap();
 
         assert_eq!(result.centroids.nrows(), 10);
-        // Labels are for the subsampled data
         assert_eq!(result.labels.len(), 2560);
     }
 }
