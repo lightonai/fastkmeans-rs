@@ -6,20 +6,22 @@
 </p>
 
 <p align="center">
-  <strong>A Rust rewrite of <a href="https://github.com/AnswerDotAI/fastkmeans">FastKMeans</a> for CPU-based clustering.</strong>
+  <strong>A fast Rust k-means with optional Metal GPU acceleration on macOS.</strong>
 </p>
 
 <br>
 
-This crate is a straightforward Rust port of the excellent [fastkmeans](https://github.com/AnswerDotAI/fastkmeans) Python library by Answer.AI. It provides the same double-chunking k-means algorithm optimized for large-scale clustering without running out of memory, now with Rust performance and multi-threaded parallelization via `rayon`.
+A Rust port of [FastKMeans](https://github.com/AnswerDotAI/fastkmeans) by Answer.AI with additional **Metal GPU acceleration** inspired by [flash-kmeans](https://github.com/svg-project/flash-kmeans). Uses double-chunking for memory-efficient large-scale clustering, multi-threaded CPU via `rayon`, and optional GPU offload via Metal Performance Shaders on Apple Silicon.
 
 <br>
 
 ## Features
 
+- **Metal GPU acceleration** — Enable `metal_gpu` on macOS for 1.5-1.7x speedup on medium-to-large workloads (Apple Silicon recommended)
 - **Double-chunking algorithm** — Processes both data points and centroids in configurable chunks to avoid OOM issues on large datasets
 - **Multi-threaded** — Leverages `rayon` for parallel computation across all CPU cores
 - **Optional BLAS acceleration** — Enable `accelerate` (macOS) or `openblas` features for optimized matrix operations
+- **CUDA GPU support** — Enable `cuda` for NVIDIA GPU acceleration with cuBLAS
 - **ndarray compatible** — Seamlessly integrates with the Rust scientific computing ecosystem
 - **Familiar API** — Provides both FAISS-style (`train`/`predict`) and scikit-learn-style (`fit`/`fit_predict`) interfaces
 - **Memory efficient** — Constant memory usage regardless of dataset size through chunked processing
@@ -42,17 +44,23 @@ Or via cargo:
 cargo add fastkmeans-rs
 ```
 
-### With BLAS Acceleration (Recommended)
-
-For optimal performance, enable a BLAS backend:
+### With GPU / BLAS Acceleration (Recommended)
 
 ```toml
-# macOS (recommended - uses Apple Accelerate framework)
+# macOS with Metal GPU (best performance on Apple Silicon)
+fastkmeans-rs = { version = "0.1", features = ["metal_gpu", "accelerate"] }
+
+# macOS CPU-only (uses Apple Accelerate BLAS)
 fastkmeans-rs = { version = "0.1", features = ["accelerate"] }
 
-# Linux/Windows (requires OpenBLAS installed)
+# Linux/Windows with CUDA GPU
+fastkmeans-rs = { version = "0.1", features = ["cuda"] }
+
+# Linux/Windows CPU-only (requires OpenBLAS installed)
 fastkmeans-rs = { version = "0.1", features = ["openblas"] }
 ```
+
+When `metal_gpu` is enabled, `FastKMeans` automatically dispatches to the Metal GPU for workloads where it's beneficial (N&times;K &ge; 500K). Smaller workloads stay on CPU. No code changes needed.
 
 <br>
 
@@ -76,7 +84,20 @@ Run the accuracy benchmark yourself:
 uv run benches/compare_reference.py
 ```
 
-### Performance Comparison
+### Metal GPU vs CPU (Apple M3 Pro)
+
+100,000 points, 128 dimensions, 25 iterations:
+
+| k | CPU (Accelerate BLAS) | Metal GPU | Speedup |
+|---|---|---|---|
+| 64 | 0.147s | 0.148s | 1.0x |
+| 256 | 0.365s | 0.231s | **1.58x** |
+| 512 | 0.622s | 0.397s | **1.57x** |
+| 1,024 | 1.280s | 0.742s | **1.73x** |
+
+Metal GPU uses MPS (Metal Performance Shaders) for optimized GEMM, single command buffer batching, and fused distance+argmin kernels. Memory usage is comparable to CPU thanks to Apple Silicon unified memory.
+
+### CPU Performance vs Python
 
 Benchmark comparing fastkmeans-rs (with BLAS) against Python fastkmeans (using PyTorch) on an Apple M3 Max:
 
@@ -128,6 +149,33 @@ fn main() {
 <br>
 
 ## Usage
+
+### Metal GPU (macOS)
+
+With the `metal_gpu` feature enabled, `FastKMeans` automatically uses Metal GPU for large workloads — no code changes needed:
+
+```rust
+use fastkmeans_rs::FastKMeans;
+
+let mut kmeans = FastKMeans::new(128, 256);
+kmeans.train(&data.view()).unwrap();  // Uses Metal GPU automatically
+let labels = kmeans.predict(&data.view()).unwrap();
+```
+
+You can also use the Metal backend directly for full control:
+
+```rust
+use fastkmeans_rs::metal_gpu::FastKMeansMetal;
+use fastkmeans_rs::KMeansConfig;
+
+let config = KMeansConfig::new(256)
+    .with_max_iters(50)
+    .with_verbose(true);
+
+let mut kmeans = FastKMeansMetal::with_config(config).unwrap();
+kmeans.train(&data.view()).unwrap();
+let labels = kmeans.predict(&data.view()).unwrap();
+```
 
 ### Basic Usage
 
@@ -206,7 +254,7 @@ kmeans.fit(&data.view())?;
 
 ## Algorithm
 
-This implementation uses the **double-chunking k-means** algorithm from the original FastKMeans:
+This implementation uses the **double-chunking k-means** algorithm from the original FastKMeans, with additional GPU acceleration inspired by [flash-kmeans](https://github.com/svg-project/flash-kmeans):
 
 1. **Efficient distance computation** using the identity:
 
@@ -214,7 +262,7 @@ This implementation uses the **double-chunking k-means** algorithm from the orig
    ||x - c||² = ||x||² + ||c||² - 2·x·c
    ```
 
-   This avoids materializing the full distance matrix by pre-computing norms and using matrix multiplication.
+   This avoids materializing the full distance matrix by pre-computing norms and using matrix multiplication (BLAS GEMM on CPU, MPS GEMM on Metal GPU).
 
 2. **Double-chunking** to control memory:
 
@@ -228,10 +276,18 @@ This implementation uses the **double-chunking k-means** algorithm from the orig
    - Cluster assignment updates
    - Centroid recomputation
 
+4. **Metal GPU path** (when `metal_gpu` feature is enabled):
+   - MPS (Metal Performance Shaders) for hardware-optimized GEMM
+   - All GPU operations batched into a single command buffer per iteration
+   - Fused distance + argmin kernel (no separate distance matrix)
+   - Pre-allocated GPU buffers (zero allocation in the hot loop)
+   - Unified memory on Apple Silicon (no CPU-GPU data transfers)
+
 <br>
 
 ## Performance Tips
 
+- **Enable Metal GPU on macOS** — `features = ["metal_gpu", "accelerate"]` gives the best performance on Apple Silicon
 - **Adjust chunk sizes** based on your available memory. Larger chunks = faster but more memory
 - **Use subsampling** (`max_points_per_centroid`) for very large datasets during initial exploration
 - **Set `verbose: true`** to monitor convergence and iteration times
@@ -332,7 +388,7 @@ This runs formatting checks, clippy, tests, documentation build, and benchmark c
 
 ## Acknowledgements
 
-This crate is a Rust port of [FastKMeans](https://github.com/AnswerDotAI/fastkmeans) by Answer.AI. All credit for the algorithm design and optimization strategies goes to the original authors.
+This crate is a Rust port of [FastKMeans](https://github.com/AnswerDotAI/fastkmeans) by Answer.AI, with Metal GPU acceleration inspired by [flash-kmeans](https://github.com/svg-project/flash-kmeans) and [flash-kmeans-mlx](https://github.com/hanxiao/flash-kmeans-mlx). Credit for the algorithm design goes to the original authors.
 
 <br>
 

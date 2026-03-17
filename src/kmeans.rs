@@ -8,6 +8,10 @@ use ndarray::{Array1, Array2, ArrayView2};
 /// This implementation uses double-chunking to process large datasets efficiently
 /// without running out of memory. It provides an API similar to FAISS and scikit-learn.
 ///
+/// When the `metal_gpu` feature is enabled, training and prediction automatically
+/// use Metal GPU acceleration on macOS (Apple Silicon recommended). If Metal
+/// initialization fails, it falls back to CPU transparently.
+///
 /// # Example
 ///
 /// ```
@@ -35,6 +39,10 @@ pub struct FastKMeans {
 
     /// Trained centroids (None if not yet fitted)
     centroids: Option<Array2<f32>>,
+
+    /// Metal GPU backend (lazily initialized when metal_gpu feature is enabled)
+    #[cfg(feature = "metal_gpu")]
+    metal: Option<crate::metal_gpu::FastKMeansMetal>,
 }
 
 impl FastKMeans {
@@ -55,6 +63,8 @@ impl FastKMeans {
             config: KMeansConfig::new(k),
             d,
             centroids: None,
+            #[cfg(feature = "metal_gpu")]
+            metal: None,
         }
     }
 
@@ -74,12 +84,17 @@ impl FastKMeans {
             d: 0, // Will be set on first train call
             config,
             centroids: None,
+            #[cfg(feature = "metal_gpu")]
+            metal: None,
         }
     }
 
     /// Train the k-means model on the given data.
     ///
     /// This method mimics the FAISS `train()` API.
+    ///
+    /// When the `metal_gpu` feature is enabled, this automatically uses
+    /// Metal GPU acceleration. Falls back to CPU if Metal is unavailable.
     ///
     /// # Arguments
     ///
@@ -103,9 +118,31 @@ impl FastKMeans {
             )));
         }
 
-        // Run the k-means algorithm
-        let result = kmeans_double_chunked(data, &self.config)?;
+        // Try Metal GPU if the feature is enabled and the workload is large enough.
+        // Metal adds dispatch overhead, so only use it when N*K is large enough to benefit.
+        #[cfg(feature = "metal_gpu")]
+        {
+            let n_samples = data.nrows();
+            let workload = n_samples as u64 * self.config.k as u64;
+            // Threshold based on benchmarks: Metal wins for medium+ workloads
+            if workload >= 500_000 {
+                if self.metal.is_none() {
+                    self.metal = Some(crate::metal_gpu::FastKMeansMetal::with_config(
+                        self.config.clone(),
+                    )?);
+                }
 
+                let metal = self.metal.as_mut().unwrap();
+                metal.train(data)?;
+                self.centroids = metal.centroids().cloned();
+                self.d = metal.d();
+                return Ok(());
+            }
+            // Small workload — use CPU (Metal overhead not worth it)
+        }
+
+        // CPU path
+        let result = kmeans_double_chunked(data, &self.config)?;
         self.centroids = Some(result.centroids);
         Ok(())
     }
@@ -130,6 +167,8 @@ impl FastKMeans {
     /// Predict cluster assignments for new data.
     ///
     /// This method mimics the scikit-learn `predict()` API.
+    /// When the `metal_gpu` feature is enabled and Metal was successfully
+    /// initialized during training, prediction also uses Metal GPU.
     ///
     /// # Arguments
     ///
@@ -155,6 +194,17 @@ impl FastKMeans {
             )));
         }
 
+        // Use Metal GPU if it was initialized during training
+        #[cfg(feature = "metal_gpu")]
+        if let Some(ref metal) = self.metal {
+            let n_samples = data.nrows();
+            let workload = n_samples as u64 * self.config.k as u64;
+            if workload >= 500_000 {
+                return metal.predict(data);
+            }
+        }
+
+        // CPU path
         let labels = predict_labels(
             data,
             &centroids.view(),
