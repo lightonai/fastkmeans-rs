@@ -127,18 +127,18 @@ impl FastKMeans {
             // Threshold based on benchmarks: Metal wins for medium+ workloads
             if workload >= 500_000 {
                 if self.metal.is_none() {
-                    self.metal =
-                        crate::metal_gpu::FastKMeansMetal::with_config(self.config.clone()).ok();
+                    self.metal = Some(crate::metal_gpu::FastKMeansMetal::with_config(
+                        self.config.clone(),
+                    )?);
                 }
 
-                if let Some(ref mut metal) = self.metal {
-                    metal.train(data)?;
-                    self.centroids = metal.centroids().cloned();
-                    self.d = metal.d();
-                    return Ok(());
-                }
+                let metal = self.metal.as_mut().unwrap();
+                metal.train(data)?;
+                self.centroids = metal.centroids().cloned();
+                self.d = metal.d();
+                return Ok(());
             }
-            // Small workload or Metal init failed — fall through to CPU
+            // Small workload — use CPU (Metal overhead not worth it)
         }
 
         // CPU path
