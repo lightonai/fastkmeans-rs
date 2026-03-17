@@ -1157,4 +1157,122 @@ mod tests {
         assert!((sums[[1, 0]] - 10.0).abs() < 1e-6); // 3 + 7
         assert!((sums[[1, 1]] - 12.0).abs() < 1e-6); // 4 + 8
     }
+
+    /// Get current process resident memory (RSS) in bytes via mach task_info.
+    fn get_rss_bytes() -> usize {
+        #[repr(C)]
+        struct MachTaskBasicInfo {
+            virtual_size: u64,
+            resident_size: u64,
+            resident_size_max: u64,
+            user_time: [u64; 2],
+            system_time: [u64; 2],
+            policy: i32,
+            suspend_count: i32,
+        }
+
+        const MACH_TASK_BASIC_INFO: u32 = 20;
+        const MACH_TASK_BASIC_INFO_COUNT: u32 =
+            (std::mem::size_of::<MachTaskBasicInfo>() / std::mem::size_of::<i32>()) as u32;
+
+        extern "C" {
+            fn mach_task_self() -> u32;
+            fn task_info(
+                target_task: u32,
+                flavor: u32,
+                task_info_out: *mut i32,
+                task_info_outCnt: *mut u32,
+            ) -> i32;
+        }
+
+        unsafe {
+            let mut info = std::mem::MaybeUninit::<MachTaskBasicInfo>::zeroed().assume_init();
+            let mut count = MACH_TASK_BASIC_INFO_COUNT;
+            let kr = task_info(
+                mach_task_self(),
+                MACH_TASK_BASIC_INFO,
+                &mut info as *mut _ as *mut i32,
+                &mut count,
+            );
+            if kr == 0 {
+                info.resident_size as usize
+            } else {
+                0
+            }
+        }
+    }
+
+    #[test]
+    fn test_metal_memory_usage_comparable_to_cpu() {
+        let _lock = GPU_LOCK.lock().unwrap();
+
+        let n_samples = 10_000;
+        let n_features = 128;
+        let k = 64;
+        let max_iters = 5;
+
+        let data = Array2::random((n_samples, n_features), Uniform::new(-1.0f32, 1.0));
+
+        // --- CPU path ---
+        let rss_before_cpu = get_rss_bytes();
+        let cpu_config = KMeansConfig::new(k)
+            .with_seed(42)
+            .with_max_iters(max_iters)
+            .with_max_points_per_centroid(None);
+        let mut cpu_kmeans = crate::FastKMeans::with_config(cpu_config);
+        cpu_kmeans.train(&data.view()).unwrap();
+        let _cpu_labels = cpu_kmeans.predict(&data.view()).unwrap();
+        let rss_after_cpu = get_rss_bytes();
+        let cpu_delta = rss_after_cpu.saturating_sub(rss_before_cpu);
+
+        // Drop CPU model to free memory before Metal run
+        drop(cpu_kmeans);
+        drop(_cpu_labels);
+
+        // --- Metal path ---
+        let rss_before_metal = get_rss_bytes();
+        let metal_config = KMeansConfig::new(k)
+            .with_seed(42)
+            .with_max_iters(max_iters)
+            .with_max_points_per_centroid(None);
+        let mut metal_kmeans = FastKMeansMetal::with_config(metal_config).unwrap();
+        metal_kmeans.train(&data.view()).unwrap();
+        let _metal_labels = metal_kmeans.predict(&data.view()).unwrap();
+        let rss_after_metal = get_rss_bytes();
+        let metal_delta = rss_after_metal.saturating_sub(rss_before_metal);
+
+        // Compute theoretical minimum: data + norms + centroids + labels
+        let data_bytes = n_samples * n_features * 4; // f32
+        let norms_bytes = n_samples * 4;
+        let centroids_bytes = k * n_features * 4;
+        let labels_bytes = n_samples * 8; // i64
+        let theoretical_min = data_bytes + norms_bytes + centroids_bytes + labels_bytes;
+
+        eprintln!(
+            "  Memory comparison (N={}, D={}, K={}):",
+            n_samples, n_features, k
+        );
+        eprintln!(
+            "    Theoretical minimum: {:.1} MB",
+            theoretical_min as f64 / 1e6
+        );
+        eprintln!("    CPU RSS delta:      {:.1} MB", cpu_delta as f64 / 1e6);
+        eprintln!("    Metal RSS delta:    {:.1} MB", metal_delta as f64 / 1e6);
+
+        // Metal should not use more than 3x the CPU memory.
+        // On Apple Silicon with unified memory, Metal buffers share physical RAM
+        // so overhead should be minimal. We use 3x as a generous upper bound to
+        // account for RSS measurement noise, Metal framework overhead, and
+        // pre-allocated GPU buffers.
+        //
+        // If cpu_delta is tiny (RSS measurement noise), compare against the
+        // theoretical minimum instead.
+        let reference = cpu_delta.max(theoretical_min);
+        assert!(
+            metal_delta <= reference * 3,
+            "Metal memory usage ({:.1} MB) should not exceed 3x CPU/theoretical ({:.1} MB)",
+            metal_delta as f64 / 1e6,
+            reference as f64 / 1e6,
+        );
+    }
 }
