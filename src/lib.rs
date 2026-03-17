@@ -114,9 +114,15 @@ mod kmeans;
 #[cfg(feature = "cuda")]
 pub mod cuda;
 
+#[cfg(feature = "metal_gpu")]
+pub mod metal_gpu;
+
 pub use config::KMeansConfig;
 pub use error::KMeansError;
 pub use kmeans::FastKMeans;
 
 #[cfg(feature = "cuda")]
 pub use cuda::FastKMeansCuda;
+
+#[cfg(feature = "metal_gpu")]
+pub use metal_gpu::FastKMeansMetal;
