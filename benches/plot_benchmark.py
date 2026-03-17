@@ -3,22 +3,24 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Data: train time in seconds for 100K vectors, 128d, 25 iterations, H100
+# Data: train time in seconds for 100K vectors, 128d, 25 iterations
+# H100 for CUDA/GPU backends, Apple Silicon for Metal GPU
 # Ordered slowest to fastest (by k=256 time)
 backends = [
     "fastkmeans-rs\nCPU (no BLAS)",
     "fastkmeans-rs\nCPU (OpenBLAS)",
-    "fast-kmeans\nCPU",
     "fastkmeans-rs\nCPU (MKL)",
+    "fast-kmeans\nCPU",
+    "fastkmeans-rs\nMetal GPU",
     "fast-kmeans\nGPU",
     "fastkmeans-rs\nGPU",
     "flash-kmeans\nGPU",
 ]
 
 data = {
-    256:  [2.678, 2.089, 0.677, 0.790, 0.152, 0.127, 0.023],
-    512:  [4.788, 3.723, 1.108, 1.162, 0.154, 0.135, 0.011],
-    1024: [8.784, 7.078, 2.010, 2.096, 0.741, 0.159, 0.012],
+    256:  [2.678, 2.089, 0.790, 0.677, 0.237, 0.152, 0.127, 0.023],
+    512:  [4.788, 3.723, 1.162, 1.108, 0.423, 0.154, 0.135, 0.011],
+    1024: [8.784, 7.078, 2.096, 2.010, 0.735, 0.741, 0.159, 0.012],
 }
 
 colors = {
@@ -27,7 +29,7 @@ colors = {
     1024: "#E45756",
 }
 
-fig, ax = plt.subplots(figsize=(14, 5))
+fig, ax = plt.subplots(figsize=(15, 5))
 
 n_backends = len(backends)
 n_ks = len(data)

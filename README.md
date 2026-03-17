@@ -88,7 +88,7 @@ Train **100K vectors, 128 dimensions**, 25 iterations.
 
 ![Benchmark](assets/benchmark.png)
 
-> Compared against [fast-kmeans](https://github.com/AnswerDotAI/fastkmeans) and [flash-kmeans](https://github.com/svg-project/flash-kmeans) (optimized Triton kernels). fastkmeans-rs CUDA is pure Rust with no Python dependency.
+> Compared against [fast-kmeans](https://github.com/AnswerDotAI/fastkmeans) and [flash-kmeans](https://github.com/svg-project/flash-kmeans) (optimized Triton kernels). CUDA/GPU benchmarks on H100, Metal GPU on Apple Silicon. fastkmeans-rs is pure Rust with no Python dependency.
 
 <br>
 
