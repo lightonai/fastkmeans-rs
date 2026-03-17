@@ -105,6 +105,9 @@ extern crate accelerate_src;
 #[cfg(feature = "openblas")]
 extern crate openblas_src;
 
+#[cfg(feature = "mkl")]
+extern crate intel_mkl_src;
+
 mod algorithm;
 mod config;
 mod distance;

@@ -8,9 +8,12 @@ use ndarray::{Array1, Array2, ArrayView2};
 /// This implementation uses double-chunking to process large datasets efficiently
 /// without running out of memory. It provides an API similar to FAISS and scikit-learn.
 ///
-/// When the `metal_gpu` feature is enabled, training and prediction automatically
-/// use Metal GPU acceleration on macOS (Apple Silicon recommended). If Metal
-/// initialization fails, it falls back to CPU transparently.
+/// When GPU features are enabled, training and prediction automatically use the
+/// best available backend:
+/// - `cuda` feature: flash-accelerated CUDA on NVIDIA GPUs (preferred)
+/// - `metal_gpu` feature: Metal GPU on macOS (Apple Silicon recommended)
+///
+/// Falls back to CPU transparently if GPU initialization fails.
 ///
 /// # Example
 ///
@@ -40,6 +43,10 @@ pub struct FastKMeans {
     /// Trained centroids (None if not yet fitted)
     centroids: Option<Array2<f32>>,
 
+    /// CUDA GPU backend (lazily initialized when cuda feature is enabled)
+    #[cfg(feature = "cuda")]
+    cuda: Option<crate::cuda::FastKMeansCuda>,
+
     /// Metal GPU backend (lazily initialized when metal_gpu feature is enabled)
     #[cfg(feature = "metal_gpu")]
     metal: Option<crate::metal_gpu::FastKMeansMetal>,
@@ -63,6 +70,8 @@ impl FastKMeans {
             config: KMeansConfig::new(k),
             d,
             centroids: None,
+            #[cfg(feature = "cuda")]
+            cuda: None,
             #[cfg(feature = "metal_gpu")]
             metal: None,
         }
@@ -84,6 +93,8 @@ impl FastKMeans {
             d: 0, // Will be set on first train call
             config,
             centroids: None,
+            #[cfg(feature = "cuda")]
+            cuda: None,
             #[cfg(feature = "metal_gpu")]
             metal: None,
         }
@@ -93,8 +104,10 @@ impl FastKMeans {
     ///
     /// This method mimics the FAISS `train()` API.
     ///
-    /// When the `metal_gpu` feature is enabled, this automatically uses
-    /// Metal GPU acceleration. Falls back to CPU if Metal is unavailable.
+    /// Automatically selects the best available backend:
+    /// - `cuda` feature enabled → CUDA GPU (raises error if init fails)
+    /// - `metal_gpu` feature enabled → Metal GPU for large workloads (raises error if init fails)
+    /// - Otherwise → CPU
     ///
     /// # Arguments
     ///
@@ -105,6 +118,7 @@ impl FastKMeans {
     /// Returns an error if:
     /// - Number of samples is less than k
     /// - Data dimensions don't match (for subsequent calls)
+    /// - GPU initialization fails when a GPU feature is enabled
     pub fn train(&mut self, data: &ArrayView2<f32>) -> Result<(), KMeansError> {
         let n_features = data.ncols();
 
@@ -118,8 +132,23 @@ impl FastKMeans {
             )));
         }
 
-        // Try Metal GPU if the feature is enabled and the workload is large enough.
-        // Metal adds dispatch overhead, so only use it when N*K is large enough to benefit.
+        // CUDA GPU (flash-accelerated) — error if init fails
+        #[cfg(feature = "cuda")]
+        {
+            if self.cuda.is_none() {
+                self.cuda = Some(crate::cuda::FastKMeansCuda::with_config(
+                    self.config.clone(),
+                )?);
+            }
+
+            let cuda = self.cuda.as_mut().unwrap();
+            cuda.train(data)?;
+            self.centroids = cuda.centroids().cloned();
+            self.d = cuda.d();
+            return Ok(());
+        }
+
+        // Metal GPU — error if init fails
         #[cfg(feature = "metal_gpu")]
         {
             let n_samples = data.nrows();
@@ -138,13 +167,15 @@ impl FastKMeans {
                 self.d = metal.d();
                 return Ok(());
             }
-            // Small workload — use CPU (Metal overhead not worth it)
         }
 
-        // CPU path
-        let result = kmeans_double_chunked(data, &self.config)?;
-        self.centroids = Some(result.centroids);
-        Ok(())
+        // CPU path (unreachable when cuda or metal_gpu features return early above)
+        #[allow(unreachable_code)]
+        {
+            let result = kmeans_double_chunked(data, &self.config)?;
+            self.centroids = Some(result.centroids);
+            Ok(())
+        }
     }
 
     /// Fit the model to the data.
@@ -167,8 +198,8 @@ impl FastKMeans {
     /// Predict cluster assignments for new data.
     ///
     /// This method mimics the scikit-learn `predict()` API.
-    /// When the `metal_gpu` feature is enabled and Metal was successfully
-    /// initialized during training, prediction also uses Metal GPU.
+    /// Uses the same backend that was initialized during training
+    /// (CUDA > Metal > CPU).
     ///
     /// # Arguments
     ///
@@ -192,6 +223,12 @@ impl FastKMeans {
                 "Expected {} features, got {}",
                 self.d, n_features
             )));
+        }
+
+        // Use CUDA GPU if it was initialized during training
+        #[cfg(feature = "cuda")]
+        if let Some(ref cuda) = self.cuda {
+            return cuda.predict(data);
         }
 
         // Use Metal GPU if it was initialized during training
