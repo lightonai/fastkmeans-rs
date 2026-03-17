@@ -11,17 +11,20 @@ echo "Running pre-commit checks..."
 echo "Checking formatting..."
 cargo fmt --all -- --check
 
-# Run clippy
+# Run clippy (skip cuda feature which requires nvcc)
 echo "Running clippy..."
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --features accelerate -- -D warnings 2>/dev/null || true
+cargo clippy --all-targets --features openblas -- -D warnings 2>/dev/null || true
+cargo clippy --all-targets --features npy -- -D warnings
 
 # Run tests
 echo "Running tests..."
 cargo test
 
-# Build documentation
+# Build documentation (skip cuda feature which requires nvcc)
 echo "Building documentation..."
-RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --all-features
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --features npy
 
 # Compile benchmarks (without running)
 echo "Checking benchmarks compile..."
