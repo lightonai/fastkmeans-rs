@@ -108,7 +108,7 @@ extern crate openblas_src;
 #[cfg(feature = "mkl")]
 extern crate intel_mkl_src;
 
-mod algorithm;
+pub mod algorithm;
 mod config;
 mod distance;
 mod error;
@@ -120,6 +120,7 @@ pub mod cuda;
 #[cfg(feature = "metal_gpu")]
 pub mod metal_gpu;
 
+pub use algorithm::kmeans_double_chunked;
 pub use config::KMeansConfig;
 pub use error::KMeansError;
 pub use kmeans::FastKMeans;
