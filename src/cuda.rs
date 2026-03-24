@@ -35,7 +35,7 @@ use cudarc::cublas::{CudaBlas, Gemm, GemmConfig};
 use cudarc::driver::{
     CudaContext as CudarcContext, CudaFunction, CudaSlice, CudaStream, LaunchConfig, PushKernelArg,
 };
-use cudarc::nvrtc::compile_ptx;
+use cudarc::nvrtc::{compile_ptx_with_opts, CompileOptions};
 use ndarray::{Array1, Array2, ArrayView2};
 use rand::seq::SliceRandom;
 use rand::SeedableRng;
@@ -241,7 +241,15 @@ impl FastKMeansCuda {
         })?;
         let stream = device.default_stream();
 
-        let ptx = compile_ptx(CUDA_KERNELS).map_err(|e| {
+        let opts = match device.compute_capability() {
+            Ok((major, minor)) => CompileOptions {
+                options: vec![format!("--gpu-architecture=sm_{}{}", major, minor)],
+                ..Default::default()
+            },
+            Err(_) => CompileOptions::default(),
+        };
+
+        let ptx = compile_ptx_with_opts(CUDA_KERNELS, opts).map_err(|e| {
             KMeansError::InvalidK(format!("Failed to compile CUDA kernels: {:?}", e))
         })?;
 
