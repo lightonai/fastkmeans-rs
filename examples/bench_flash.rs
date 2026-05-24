@@ -10,14 +10,14 @@ use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 use std::time::Instant;
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "cudarc")]
 use fastkmeans_rs::cuda::FastKMeansCuda;
 
 fn main() {
     println!("=== Flash K-Means CUDA Benchmark (H100) ===");
     println!("25 iterations, seed=42, no subsampling\n");
 
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "cudarc")]
     {
         // Warmup GPU
         let warmup_data = Array2::random((1000, 128), Uniform::new(-1.0f32, 1.0));
@@ -98,8 +98,8 @@ fn main() {
         }
     }
 
-    #[cfg(not(feature = "cuda"))]
-    println!("CUDA feature not enabled");
+    #[cfg(not(feature = "cudarc"))]
+    println!("CUDA backend not enabled");
 
     println!("\n=== Done ===");
 }

@@ -75,6 +75,9 @@
 //!
 //! ```toml
 //! fastkmeans-rs = { version = "0.1", features = ["cuda"] }
+//!
+//! # Or choose an explicit cudarc link/load strategy
+//! fastkmeans-rs = { version = "0.1", features = ["cudarc", "dynamic-linking"] }
 //! ```
 //!
 //! This requires the CUDA toolkit to be installed. Then use `FastKMeansCuda`:
@@ -114,7 +117,7 @@ mod distance;
 mod error;
 mod kmeans;
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "cudarc")]
 pub mod cuda;
 
 #[cfg(feature = "metal_gpu")]
@@ -125,7 +128,7 @@ pub use config::KMeansConfig;
 pub use error::KMeansError;
 pub use kmeans::FastKMeans;
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "cudarc")]
 pub use cuda::FastKMeansCuda;
 
 #[cfg(feature = "metal_gpu")]
