@@ -9,7 +9,9 @@
 //! - **Pre-allocated buffers**: All GPU buffers allocated once and reused
 //! - **GPU norm computation**: Squared norms computed on GPU, not CPU
 //!
-//! Enable the `cuda` feature to use this functionality.
+//! Enable the `cuda` convenience feature to use this functionality with cudarc's
+//! default dynamic-loading strategy, or enable `cudarc` plus exactly one cudarc
+//! link/load strategy feature such as `dynamic-linking`.
 //!
 //! # Example
 //!

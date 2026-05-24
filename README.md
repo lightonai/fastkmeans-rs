@@ -27,10 +27,14 @@ fastkmeans-rs = "0.1"
 | `accelerate` | macOS | Apple Accelerate BLAS for CPU |
 | `mkl` | Linux (Intel/AMD) | Intel MKL for CPU (recommended for Linux, fastest) |
 | `openblas` | Linux / Windows | OpenBLAS for CPU (requires `libopenblas-dev`) |
+| `cudarc` | NVIDIA GPU | Enable CUDA functionality with configuration of underlying lib resolution strategy |
 
 ```toml
 # NVIDIA GPU (recommended for Linux)
 fastkmeans-rs = { version = "0.1", features = ["cuda"] }
+
+# NVIDIA GPU with explicit CUDA link/load strategy
+fastkmeans-rs = { version = "0.1", features = ["cudarc", "dynamic-linking"] }
 
 # Apple Silicon GPU
 fastkmeans-rs = { version = "0.1", features = ["metal_gpu", "accelerate"] }
@@ -41,7 +45,7 @@ fastkmeans-rs = { version = "0.1", features = ["accelerate"] }   # macOS
 fastkmeans-rs = { version = "0.1", features = ["openblas"] }     # Linux (fallback)
 ```
 
-When `cuda` or `metal_gpu` is enabled, `FastKMeans` automatically uses the GPU. No code changes needed.
+When `cuda`, `cudarc` (with a link/load strategy), or `metal_gpu` is enabled, `FastKMeans` automatically uses the GPU. No code changes needed.
 
 <br>
 

@@ -9,7 +9,7 @@ use ndarray::Array2;
 use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "cudarc")]
 use fastkmeans_rs::cuda::FastKMeansCuda;
 
 fn main() {
@@ -68,7 +68,7 @@ fn main() {
 
     let data = Array2::random((n_samples, n_features), Uniform::new(-1.0f32, 1.0));
 
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "cudarc")]
     {
         let config = KMeansConfig::new(k)
             .with_seed(42)
@@ -86,6 +86,6 @@ fn main() {
         );
     }
 
-    #[cfg(not(feature = "cuda"))]
-    println!("CUDA not enabled");
+    #[cfg(not(feature = "cudarc"))]
+    println!("CUDA backend not enabled");
 }

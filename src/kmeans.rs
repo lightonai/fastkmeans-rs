@@ -10,7 +10,8 @@ use ndarray::{Array1, Array2, ArrayView2};
 ///
 /// When GPU features are enabled, training and prediction automatically use the
 /// best available backend:
-/// - `cuda` feature: flash-accelerated CUDA on NVIDIA GPUs (preferred)
+/// - `cuda` convenience feature, or `cudarc` plus a cudarc link/load strategy:
+///   flash-accelerated CUDA on NVIDIA GPUs (preferred)
 /// - `metal_gpu` feature: Metal GPU on macOS (Apple Silicon recommended)
 ///
 /// Falls back to CPU transparently if GPU initialization fails.
@@ -43,8 +44,8 @@ pub struct FastKMeans {
     /// Trained centroids (None if not yet fitted)
     centroids: Option<Array2<f32>>,
 
-    /// CUDA GPU backend (lazily initialized when cuda feature is enabled)
-    #[cfg(feature = "cuda")]
+    /// CUDA GPU backend (lazily initialized when cudarc feature is enabled)
+    #[cfg(feature = "cudarc")]
     cuda: Option<crate::cuda::FastKMeansCuda>,
 
     /// Metal GPU backend (lazily initialized when metal_gpu feature is enabled)
@@ -70,7 +71,7 @@ impl FastKMeans {
             config: KMeansConfig::new(k),
             d,
             centroids: None,
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "cudarc")]
             cuda: None,
             #[cfg(feature = "metal_gpu")]
             metal: None,
@@ -93,7 +94,7 @@ impl FastKMeans {
             d: 0, // Will be set on first train call
             config,
             centroids: None,
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "cudarc")]
             cuda: None,
             #[cfg(feature = "metal_gpu")]
             metal: None,
@@ -105,7 +106,7 @@ impl FastKMeans {
     /// This method mimics the FAISS `train()` API.
     ///
     /// Automatically selects the best available backend:
-    /// - `cuda` feature enabled → CUDA GPU (raises error if init fails)
+    /// - `cuda` convenience feature, or `cudarc` plus a cudarc link/load strategy → CUDA GPU (raises error if init fails)
     /// - `metal_gpu` feature enabled → Metal GPU for large workloads (raises error if init fails)
     /// - Otherwise → CPU
     ///
@@ -133,7 +134,7 @@ impl FastKMeans {
         }
 
         // CUDA GPU (flash-accelerated) — error if init fails
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "cudarc")]
         {
             if self.cuda.is_none() {
                 self.cuda = Some(crate::cuda::FastKMeansCuda::with_config(
@@ -169,7 +170,7 @@ impl FastKMeans {
             }
         }
 
-        // CPU path (unreachable when cuda or metal_gpu features return early above)
+        // CPU path (unreachable when cudarc or metal_gpu features return early above)
         #[allow(unreachable_code)]
         {
             let result = kmeans_double_chunked(data, &self.config)?;
@@ -226,7 +227,7 @@ impl FastKMeans {
         }
 
         // Use CUDA GPU if it was initialized during training
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "cudarc")]
         if let Some(ref cuda) = self.cuda {
             return cuda.predict(data);
         }

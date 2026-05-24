@@ -8,7 +8,7 @@ use ndarray_rand::rand_distr::Uniform;
 use ndarray_rand::RandomExt;
 use std::time::Instant;
 
-#[cfg(feature = "cuda")]
+#[cfg(feature = "cudarc")]
 use fastkmeans_rs::cuda::FastKMeansCuda;
 
 fn main() {
@@ -40,7 +40,7 @@ fn main() {
         println!("  CPU time:  {:>8.3}s", cpu_time.as_secs_f64());
 
         // CUDA benchmark
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "cudarc")]
         {
             let cuda_config = KMeansConfig::new(k)
                 .with_seed(42)
@@ -77,9 +77,9 @@ fn main() {
             }
         }
 
-        #[cfg(not(feature = "cuda"))]
+        #[cfg(not(feature = "cudarc"))]
         {
-            println!("  CUDA: (feature not enabled)");
+            println!("  CUDA: (backend not enabled)");
         }
 
         println!();

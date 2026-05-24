@@ -1,6 +1,6 @@
 //! CUDA-specific integration tests
 
-#![cfg(feature = "cuda")]
+#![cfg(feature = "cudarc")]
 
 use fastkmeans_rs::cuda::FastKMeansCuda;
 use fastkmeans_rs::{FastKMeans, KMeansConfig};
