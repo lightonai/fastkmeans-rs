@@ -44,7 +44,7 @@ pub struct FastKMeans {
     centroids: Option<Array2<f32>>,
 
     /// CUDA GPU backend (lazily initialized when cuda feature is enabled)
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     cuda: Option<crate::cuda::FastKMeansCuda>,
 
     /// Metal GPU backend (lazily initialized when metal_gpu feature is enabled)
@@ -70,7 +70,7 @@ impl FastKMeans {
             config: KMeansConfig::new(k),
             d,
             centroids: None,
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "_cuda")]
             cuda: None,
             #[cfg(feature = "metal_gpu")]
             metal: None,
@@ -93,7 +93,7 @@ impl FastKMeans {
             d: 0, // Will be set on first train call
             config,
             centroids: None,
-            #[cfg(feature = "cuda")]
+            #[cfg(feature = "_cuda")]
             cuda: None,
             #[cfg(feature = "metal_gpu")]
             metal: None,
@@ -133,7 +133,7 @@ impl FastKMeans {
         }
 
         // CUDA GPU (flash-accelerated) — error if init fails
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         {
             if self.cuda.is_none() {
                 self.cuda = Some(crate::cuda::FastKMeansCuda::with_config(
@@ -226,7 +226,7 @@ impl FastKMeans {
         }
 
         // Use CUDA GPU if it was initialized during training
-        #[cfg(feature = "cuda")]
+        #[cfg(feature = "_cuda")]
         if let Some(ref cuda) = self.cuda {
             return cuda.predict(data);
         }

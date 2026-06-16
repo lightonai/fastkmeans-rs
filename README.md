@@ -22,15 +22,18 @@ fastkmeans-rs = "0.1"
 
 | Feature | Platform | Description |
 |---|---|---|
-| `cuda` | NVIDIA GPU | Flash-accelerated CUDA with cuBLAS GEMM and warp-cooperative kernels |
+| `cuda` | NVIDIA GPU (CUDA 11.8 / 12.x) | Flash-accelerated CUDA with cuBLAS GEMM and warp-cooperative kernels |
+| `cuda-13` | NVIDIA GPU (CUDA 13.x) | Same as `cuda`, built against the CUDA 13 SONAMEs (use on hosts where only `.so.13` libraries exist) |
 | `metal_gpu` | macOS (Apple Silicon) | Metal Performance Shaders GPU acceleration |
 | `accelerate` | macOS | Apple Accelerate BLAS for CPU |
 | `mkl` | Linux (Intel/AMD) | Intel MKL for CPU (recommended for Linux, fastest) |
 | `openblas` | Linux / Windows | OpenBLAS for CPU (requires `libopenblas-dev`) |
 
 ```toml
-# NVIDIA GPU (recommended for Linux)
-fastkmeans-rs = { version = "0.1", features = ["cuda"] }
+# NVIDIA GPU (recommended for Linux). Pick the CUDA major matching the host;
+# do NOT enable both (cudarc binds one CUDA major at compile time).
+fastkmeans-rs = { version = "1", features = ["cuda"] }      # CUDA 11.8 / 12.x
+fastkmeans-rs = { version = "1", features = ["cuda-13"] }   # CUDA 13.x
 
 # Apple Silicon GPU
 fastkmeans-rs = { version = "0.1", features = ["metal_gpu", "accelerate"] }
