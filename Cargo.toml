@@ -1,6 +1,6 @@
 [package]
 name = "fastkmeans-rs"
-version = "1.0.6"
+version = "1.0.7"
 edition = "2021"
 description = "A fast and efficient k-means clustering implementation in Rust, compatible with ndarray"
 license = "Apache-2.0"
@@ -30,7 +30,11 @@ intel-mkl-src = { version = "0.8", features = ["mkl-static-lp64-seq"], optional 
 accelerate-src = { version = "0.3", optional = true }
 
 # CUDA dependencies (optional)
-cudarc = { version = "0.19", default-features = false, features = ["cuda-11080", "cublas", "dynamic-loading", "nvrtc"], optional = true }
+# NOTE: the CUDA major-version binding (`cuda-11080` / `cuda-13000` / ...) is
+# intentionally NOT pinned here. cudarc binds exactly one CUDA major version at
+# compile time, so the choice is exposed through the `cuda` / `cuda-13` features
+# below and lets a parent crate select it via feature unification.
+cudarc = { version = "0.19", default-features = false, features = ["cublas", "dynamic-loading", "nvrtc"], optional = true }
 
 # Metal GPU dependencies (macOS only, optional)
 metal = { version = "0.31", optional = true }
@@ -52,9 +56,20 @@ mkl = ["blas-src", "intel-mkl-src", "ndarray/blas"]
 # Use Apple Accelerate framework (macOS only, recommended for macOS)
 accelerate = ["blas-src", "accelerate-src", "ndarray/blas"]
 
-# CUDA GPU acceleration
-# Requires CUDA toolkit installed (nvcc in PATH)
-cuda = ["cudarc"]
+# CUDA GPU acceleration. Requires the CUDA toolkit / driver at runtime.
+#
+# cudarc binds exactly ONE CUDA major version at compile time (the cuBLAS/NVRTC
+# SONAMEs and bindings differ between majors), so pick the one matching the
+# target host and DO NOT enable more than one:
+#   * `cuda`    -> CUDA 11.8 / 12.x  (default, unchanged behaviour)
+#   * `cuda-13` -> CUDA 13.x         (hosts where only .so.13 libraries exist)
+# Both turn on the internal `_cuda` gate that actually compiles the CUDA code.
+cuda = ["_cuda", "cudarc/cuda-11080"]
+cuda-13 = ["_cuda", "cudarc/cuda-13000"]
+
+# Internal: pulls in cudarc and gates all CUDA code. Not meant to be enabled
+# directly — always go through `cuda` or `cuda-13` so a CUDA version is chosen.
+_cuda = ["dep:cudarc"]
 
 # Metal GPU acceleration (macOS only, Apple Silicon recommended)
 # Uses Metal compute shaders for GPU-accelerated k-means
@@ -68,7 +83,7 @@ required-features = ["npy"]
 [[bin]]
 name = "compare-kmeans-cuda"
 path = "src/bin/compare_kmeans_cuda.rs"
-required-features = ["npy", "cuda"]
+required-features = ["npy", "_cuda"]
 
 [[bench]]
 name = "kmeans_benchmark"

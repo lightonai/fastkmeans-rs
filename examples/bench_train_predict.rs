@@ -15,16 +15,16 @@ fn main() {
     let n = 100_000;
     let d = 128;
 
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     let backend = "CUDA";
-    #[cfg(not(feature = "cuda"))]
+    #[cfg(not(feature = "_cuda"))]
     let backend = "CPU";
 
     println!("=== fastkmeans-rs {} ===", backend);
     println!("100K vectors x 128d, 25 iters (train on 100K, predict on 100K)\n");
 
     // Warmup
-    #[cfg(feature = "cuda")]
+    #[cfg(feature = "_cuda")]
     {
         let w = Array2::random((1000, d), Uniform::new(-1.0f32, 1.0));
         let mut wk = FastKMeans::with_config(
