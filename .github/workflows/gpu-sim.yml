@@ -1,0 +1,64 @@
+name: CUDA tests (simulated H100)
+
+# Optional, non-required check. The hosted runners have no GPU, so the `cuda-13`
+# feature is never built or tested in ci.yml. This runs the CUDA tests on a
+# simulated NVIDIA H100 (https://github.com/pantheongpu/pantheonsim). A simulator
+# has no timing model and runs PTX rather than SASS, so it complements testing on
+# a real card and does not replace it.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/gpu-sim.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cuda-sim:
+    name: CUDA tests on a simulated H100
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          persist-credentials: false
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      # The toolkit supplies nvcc and NVRTC. cuBLAS calls go to the simulator's own
+      # cuBLAS, which computes them on the host, so the default library path is kept.
+      - name: Set up the simulated H100 and CUDA toolkit
+        uses: pantheongpu/setup-pantheonsim@656f502ef4782d94d34d8ddd368e333960609639 # v0.1.8
+        with:
+          gpu: nvidia/h100
+          cuda-toolkit: "13.0"
+
+      # Build outside the simulator; only the test binaries run under it.
+      - name: Build the test binaries
+        run: cargo test --release --features cuda-13 --no-run -j3
+
+      # With `cuda-13` every FastKMeans call goes through the GPU and fails if no
+      # device is found, so nothing can skip. The grep makes sure the CUDA test
+      # file was compiled in (its tests are behind `#![cfg(feature = "_cuda")]`).
+      - name: Run the tests on the simulated H100
+        shell: bash
+        run: |
+          export LD_LIBRARY_PATH="${LD_LIBRARY_PATH:+$LD_LIBRARY_PATH:}/usr/local/cuda-13.0/lib64"
+          export PATH="/usr/local/cuda-13.0/bin:$PATH"
+          vgpu run cargo test --release --features cuda-13 --lib --tests -- --test-threads=1 2>&1 | tee test.log
+          grep -q '^test test_cuda_train ' test.log || { echo "::error::tests/cuda_tests.rs did not run"; exit 1; }
