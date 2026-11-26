@@ -69,8 +69,11 @@ kernel void compute_squared_norms(
     device const float* data [[buffer(0)]],
     device float* norms [[buffer(1)]],
     constant uint& n_features [[buffer(2)]],
+    constant uint& n_rows [[buffer(3)]],
     uint gid [[thread_position_in_grid]])
 {
+    if (gid >= n_rows) return;
+
     float sum = 0.0f;
     uint base = gid * n_features;
     for (uint j = 0; j < n_features; j++) {
@@ -85,8 +88,10 @@ kernel void compute_squared_norms(
 // ============================================================================
 kernel void init_best_dists(
     device float* dists [[buffer(0)]],
+    constant uint& n [[buffer(1)]],
     uint gid [[thread_position_in_grid]])
 {
+    if (gid >= n) return;
     dists[gid] = INFINITY;
 }
 
@@ -95,8 +100,10 @@ kernel void init_best_dists(
 // ============================================================================
 kernel void init_labels(
     device int* labels [[buffer(0)]],
+    constant uint& n [[buffer(1)]],
     uint gid [[thread_position_in_grid]])
 {
+    if (gid >= n) return;
     labels[gid] = 0;
 }
 
@@ -322,6 +329,7 @@ impl FastKMeansMetal {
                 // 1. Compute centroid norms
                 {
                     let n_features_u32 = n_features as u32;
+                    let k_u32 = k as u32;
                     let enc = cmd.new_compute_command_encoder();
                     enc.set_compute_pipeline_state(&self.norms_pipeline);
                     enc.set_buffer(0, Some(&centroids_buf), 0);
@@ -331,6 +339,7 @@ impl FastKMeansMetal {
                         4,
                         &n_features_u32 as *const u32 as *const std::ffi::c_void,
                     );
+                    enc.set_bytes(3, 4, &k_u32 as *const u32 as *const std::ffi::c_void);
                     let groups = MTLSize::new(div_ceil(k as u64, 256), 1, 1);
                     let threads = MTLSize::new(256, 1, 1);
                     enc.dispatch_thread_groups(groups, threads);
@@ -356,9 +365,11 @@ impl FastKMeansMetal {
                         let enc = cmd.new_compute_command_encoder();
                         enc.set_compute_pipeline_state(&self.init_dists_pipeline);
                         enc.set_buffer(0, Some(&dists_buf), dists_byte_off);
+                        enc.set_bytes(1, 4, &chunk_n_u32 as *const u32 as *const _);
                         enc.dispatch_thread_groups(groups_1d, threads_1d);
                         enc.set_compute_pipeline_state(&self.init_labels_pipeline);
                         enc.set_buffer(0, Some(&labels_buf), labels_byte_off);
+                        enc.set_bytes(1, 4, &chunk_n_u32 as *const u32 as *const _);
                         enc.dispatch_thread_groups(groups_1d, threads_1d);
                         enc.end_encoding();
                     }
@@ -553,9 +564,11 @@ impl FastKMeansMetal {
                     let enc = cmd.new_compute_command_encoder();
                     enc.set_compute_pipeline_state(&self.init_dists_pipeline);
                     enc.set_buffer(0, Some(&dists_buf), dists_byte_off);
+                    enc.set_bytes(1, 4, &chunk_n_u32 as *const u32 as *const _);
                     enc.dispatch_thread_groups(groups_1d, threads_1d);
                     enc.set_compute_pipeline_state(&self.init_labels_pipeline);
                     enc.set_buffer(0, Some(&labels_buf), labels_byte_off);
+                    enc.set_bytes(1, 4, &chunk_n_u32 as *const u32 as *const _);
                     enc.dispatch_thread_groups(groups_1d, threads_1d);
                     enc.end_encoding();
                 }
@@ -674,6 +687,7 @@ impl FastKMeansMetal {
     ) -> Result<Buffer, KMeansError> {
         let norms_buf = self.new_buffer_zeros(n_samples, mem::size_of::<f32>());
         let n_features_u32 = n_features as u32;
+        let n_samples_u32 = n_samples as u32;
 
         let cmd = self.queue.new_command_buffer();
         let enc = cmd.new_compute_command_encoder();
@@ -685,6 +699,11 @@ impl FastKMeansMetal {
             2,
             mem::size_of::<u32>() as u64,
             &n_features_u32 as *const u32 as *const std::ffi::c_void,
+        );
+        enc.set_bytes(
+            3,
+            mem::size_of::<u32>() as u64,
+            &n_samples_u32 as *const u32 as *const std::ffi::c_void,
         );
 
         let threads_per_group = MTLSize::new(256, 1, 1);
@@ -1138,6 +1157,42 @@ mod tests {
 
         for &label in labels.iter() {
             assert!((0..100).contains(&label));
+        }
+    }
+
+    /// n not a multiple of the 256-thread group: the 1-D kernels must not
+    /// write past the end of their buffers (that left points stuck on label 0).
+    #[test]
+    fn test_metal_predict_matches_cpu_argmin_unaligned_n() {
+        let _lock = GPU_LOCK.lock().unwrap();
+        for n in [100usize, 300, 400, 700, 1100] {
+            let data = Array2::random((n, 64), Uniform::new(-1.0f32, 1.0));
+            let config = KMeansConfig::new(64)
+                .with_seed(42)
+                .with_max_iters(4)
+                .with_max_points_per_centroid(None);
+            let mut kmeans = FastKMeansMetal::with_config(config.clone()).unwrap();
+            kmeans.train(&data.view()).unwrap();
+            let centroids = kmeans.centroids().unwrap();
+            let gpu = kmeans.predict(&data.view()).unwrap();
+            let cpu = crate::algorithm::predict_labels(
+                &data.view(),
+                &centroids.view(),
+                config.chunk_size_data,
+                config.chunk_size_centroids,
+            );
+            // Compare distances, not labels, so float near-ties cannot fail the test.
+            let dist = |i: usize, c: i64| {
+                (&data.row(i) - &centroids.row(c as usize))
+                    .mapv(|v| v * v)
+                    .sum()
+            };
+            let wrong = (0..n).filter(|&i| dist(i, gpu[i]) > dist(i, cpu[i]) + 1e-3);
+            assert_eq!(
+                wrong.count(),
+                0,
+                "n={n}: Metal predict is not the nearest centroid"
+            );
         }
     }
 
